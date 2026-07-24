@@ -26,8 +26,8 @@ resources. It does this without taking ownership of
 Kubernetes users on OpenStack currently have three separate concerns:
 
 - cloud-provider-openstack provisions Octavia load balancers for
-  `Service type=LoadBalancer`;
-- proxy controllers such as Traefik implement Gateway API inside the cluster;
+  `Service type=LoadBalancer`
+- proxy controllers such as Traefik implement Gateway API inside the cluster
 - Octavia exposes cloud-native L4 and selected L7 load-balancing capabilities,
   but there is no independent Gateway API controller that maps Gateway
   resources directly to those capabilities.
@@ -39,21 +39,21 @@ boundary with existing cloud-provider components.
 
 ```mermaid
 flowchart TD
-    S["Service type=LoadBalancer"] --> OCCM["cloud-provider-openstack"]
+    S["Loadbalancer type Service"] --> OCCM["cloud-provider-openstack"]
     OCCM --> SLB["OCCM-owned Octavia LB"]
 
-    G["Gateway API resources"] --> CTRL["openstack-gateway-controller"]
+    G["Gateway API resources"] --> CTRL["openstack-gateway-controller (here!)"]
     CTRL --> OLB["Gateway-owned Octavia LB"]
     CTRL --> K8S["Service and EndpointSlice reads"]
 ```
 
 The controller:
 
-- watches only Gateway API resources assigned to its controller name;
+- watches only Gateway API resources assigned to its controller name
 - reads backend `Service`, `EndpointSlice`, `Secret`, and `ReferenceGrant`
-  resources as required;
-- **creates only Gateway-owned OpenStack resources**;
-- never adopts, mutates, or deletes an OCCM-owned load balancer;
+  resources as required
+- **creates only Gateway-owned OpenStack resources**
+- never adopts, mutates, or deletes an OCCM-owned load balancer
 - records an immutable Kubernetes object UID and controller identity on every
   OpenStack resource where the API supports metadata or tags.
 
@@ -64,7 +64,7 @@ resource mapping and ownership contract.
 
 | Path | Gateway controller | Data plane | Purpose |
 | --- | --- | --- | --- |
-| Octavia native | This project | Octavia | Primary implementation; independent of the OCCM Service controller |
+| Octavia native | This project | Octavia | Primary implementation, independent of the OCCM Service controller |
 | Traefik reference profile | Traefik | Traefik behind an OpenStack L4 load balancer | Adopter-driven future work |
 | Envoy reference profile | Not yet planned | Envoy | Adopter-driven future work |
 
@@ -76,16 +76,16 @@ occm loadbalancer controller(L4).
 
 The first native vertical slice targets:
 
-- the Gateway controller profile;
-- `GatewayClass`, `Gateway`, and `HTTPRoute`;
-- HTTP listeners;
-- hostname, exact-path, and path-prefix matching;
-- a single Service backend per rule;
-- one Octavia load balancer per Gateway;
-- Octavia listeners, L7 policies and rules, pools, members, and health monitors;
-- Floating IP allocation;
-- standard Gateway API status conditions;
-- the Octavia Amphora provider as the first tested provider.
+- the Gateway controller profile
+- `GatewayClass`, `Gateway`, and `HTTPRoute`
+- HTTP listeners
+- hostname, exact-path, and path-prefix matching
+- a single Service backend per rule
+- one Octavia load balancer per Gateway
+- Octavia listeners, L7 policies and rules, pools, members, and health monitors
+- Floating IP allocation
+- standard Gateway API status conditions
+- the Octavia Amphora provider as the first tested provider
 
 The first release will not claim full Gateway API conformance. Octavia provider
 capabilities vary, and some Gateway API HTTP features cannot be represented by
@@ -123,9 +123,9 @@ open source project.
 
 Its long-term goals are to:
 
-- implement a conformant Gateway API controller backed by OpenStack Octavia;
-- be listed as a Gateway API implementation after meeting the relevant requirements;
-- build a diverse group of users, contributors, and maintainers; and
+- implement a conformant Gateway API controller backed by OpenStack Octavia
+- be listed as a Gateway API implementation after meeting the relevant requirements
+- build a diverse group of users, contributors, and maintainers and
 - explore an appropriate long-term community home if the project demonstrates
   sustained adoption and contributor interest.
 
@@ -138,7 +138,7 @@ or the cloud-provider-openstack project.
 ## Contributing
 
 Design feedback, OpenStack provider reports, and implementation contributions
-are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the issues marked
+are welcome. Start with CONTRIBUTING.md(will be open soon) and the issues marked
 `help wanted`.
 
 Until the first architecture decision records are accepted, substantial API or

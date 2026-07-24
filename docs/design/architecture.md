@@ -33,35 +33,35 @@ claim features that the selected Octavia provider cannot supply.
 
 ### cloud-provider-openstack owns
 
-- cloud node lifecycle and other CCM responsibilities;
-- Kubernetes `Service type=LoadBalancer`;
+- cloud node lifecycle and other CCM responsibilities
+- Kubernetes `Service type=LoadBalancer`
 - Octavia resources created for those Services.
 
 ### openstack-gateway-controller owns
 
 - Gateway API resources whose `GatewayClass.spec.controllerName` exactly
-  matches the project's configured controller name;
-- Octavia and Neutron resources created for those Gateways;
+  matches the project's configured controller name
+- Octavia and Neutron resources created for those Gateways
 - any helper resources it explicitly creates and labels with a Gateway UID.
 
 ### openstack-gateway-controller may read
 
-- `Service`;
-- `EndpointSlice`;
-- `Secret`;
-- `ReferenceGrant`;
-- `Node`, if the selected member mode requires Node addresses;
-- provider configuration and credentials.
+- `Service`
+- `EndpointSlice`
+- `Secret`
+- `ReferenceGrant`
+- `Node`, if the selected member mode requires Node addresses
+- provider configuration and credentials
 
 Reading a backend Service does not imply ownership of that Service.
 
 ### openstack-gateway-controller must never
 
-- watch `Service type=LoadBalancer` as a provisioning source;
-- add or remove OCCM finalizers;
-- adopt an Octavia resource using its name alone;
-- mutate or delete a resource whose full project identity does not match;
-- create a `Service type=LoadBalancer` for its native path;
+- watch `Service type=LoadBalancer` as a provisioning source
+- add or remove OCCM finalizers
+- adopt an Octavia resource using its name alone
+- mutate or delete a resource whose full project identity does not match
+- create a `Service type=LoadBalancer` for its native path
 - install a proxy controller inside the native reconciliation loop.
 
 ## Proposed resource mapping
@@ -71,7 +71,7 @@ Reading a backend Service does not imply ownership of that Service.
 | GatewayClass | Provider/class configuration | Reconciled only for the exact controller name |
 | Gateway | Octavia Load Balancer | One load balancer per Gateway initially |
 | Gateway address | Neutron Floating IP or VIP | Status must contain the client-reachable address |
-| Gateway listener | Octavia Listener | HTTP first; terminated HTTPS later |
+| Gateway listener | Octavia Listener | HTTP first terminated HTTPS later |
 | HTTPRoute parent attachment | Listener association and status | Must follow Gateway API attachment rules |
 | HTTPRoute rule | L7 Policy | Only representable matches and actions |
 | HTTPRoute match | L7 Rule | Host/path first |
@@ -84,12 +84,12 @@ Reading a backend Service does not imply ownership of that Service.
 
 Every created OpenStack resource should carry, where supported:
 
-- project identifier;
-- controller identifier;
-- cluster identifier;
-- Kubernetes namespace and name;
-- immutable Gateway UID;
-- Kubernetes resource role;
+- project identifier
+- controller identifier
+- cluster identifier
+- Kubernetes namespace and name
+- immutable Gateway UID
+- Kubernetes resource role
 - controller release version.
 
 Deletion requires all immutable identity fields to match. If an API does not
@@ -105,29 +105,29 @@ project identity.
 
 ### GatewayClass reconciler
 
-- filters on the exact controller name;
-- validates class configuration;
-- discovers or validates provider capabilities;
-- writes `Accepted` and `supportedFeatures`;
+- filters on the exact controller name
+- validates class configuration
+- discovers or validates provider capabilities
+- writes `Accepted` and `supportedFeatures`
 - prevents deletion while Gateways use the class.
 
 ### Gateway reconciler
 
-- validates listener support;
-- ensures the load balancer and address;
-- ensures listeners;
-- aggregates attached-route status;
-- writes Gateway and listener conditions;
-- performs identity-safe finalization.
+- validates listener support
+- ensures the load balancer and address
+- ensures listeners
+- aggregates attached route status
+- writes Gateway and listener conditions
+- performs identity safe finalization
 
 ### HTTPRoute reconciler
 
-- evaluates parent attachment;
-- resolves references and ReferenceGrant rules;
-- validates supported matches and filters;
-- builds L7 policies, rules, pools, and members;
-- writes parent status;
-- watches relevant backend changes.
+- evaluates parent attachment
+- resolves references and ReferenceGrant rules
+- validates supported matches and filters
+- builds L7 policies, rules, pools, and members
+- writes parent status
+- watches relevant backend changes
 
 ## Backend member modes
 
@@ -140,14 +140,14 @@ Octavia members point to worker Node addresses and a NodePort.
 
 Advantages:
 
-- works when Pod CIDRs are not routable from Octavia;
+- works when Pod CIDRs are not routable from Octavia
 - resembles the proven model used by the existing Octavia Ingress Controller.
 
 Risks:
 
-- ordinary ClusterIP backend Services do not expose a NodePort;
-- generated helper Services need strict ownership and EndpointSlice behavior;
-- health behavior depends on kube-proxy and traffic policy.
+- ordinary ClusterIP backend Services do not expose a NodePort
+- generated helper Services need strict ownership and EndpointSlice behavior
+- health behavior depends on kube-proxy and traffic policy
 
 ### Pod IP mode
 
@@ -155,14 +155,14 @@ Octavia members point directly to EndpointSlice addresses.
 
 Advantages:
 
-- avoids an extra node hop;
+- avoids an extra node hop
 - naturally follows endpoint readiness.
 
 Risks:
 
-- requires routable Pod networking;
-- behavior varies by CNI and OpenStack topology;
-- security groups and routes may need additional management.
+- requires routable Pod networking
+- behavior varies by CNI and OpenStack topology
+- security groups and routes may need additional management
 
 The MVP mode will be selected by ADR after both are tested in Openstack Cluster. The
 controller must expose the selected mode in class configuration and must not
@@ -172,19 +172,19 @@ guess.
 
 The controller needs a capability object resolved from:
 
-- selected Octavia provider;
-- OpenStack service versions;
-- verified project configuration;
-- capabilities proven by project tests.
+- selected Octavia provider
+- OpenStack service versions
+- verified project configuration
+- capabilities proven by project tests
 
 Capabilities influence:
 
-- listener protocols;
-- L7 matches and actions;
-- TLS termination;
-- health monitors;
-- tags;
-- allowed Gateway API `supportedFeatures`.
+- listener protocols
+- L7 matches and actions
+- TLS termination
+- health monitors
+- tags
+- allowed Gateway API `supportedFeatures`
 
 Unknown capability is treated as unsupported until verified. The controller
 must use standard Gateway API conditions and clear messages when rejecting an
@@ -259,7 +259,7 @@ profile, not a mode of the native controller.
   expectations?
 - Which Octavia L7 behaviors pass the Gateway HTTP Core test suite?
 - What provider identity can be detected reliably at runtime?
-- Which project-controlled DNS domain should back the controller name and API
+- Which projected controlling DNS domain should back the controller name and API
   group?
 - Which fields belong in class parameters versus portable Gateway
   infrastructure attributes?

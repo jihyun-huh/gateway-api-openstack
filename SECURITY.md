@@ -15,13 +15,13 @@ controller release.
 
 Include:
 
-- affected version or commit;
-- impact and threat model;
-- reproduction details;
+- affected version or commit
+- impact and threat model
+- reproduction details
 - whether credentials, tenant isolation, resource deletion, or traffic
-  exposure is involved;
-- any suggested mitigation;
-- your preferred contact details and disclosure timeline.
+  exposure is involved
+- any suggested mitigation
+- your preferred contact details and disclosure timeline
 
 Never send real OpenStack credentials or customer data. Use redacted
 configuration and a minimal reproduction.
@@ -36,11 +36,11 @@ response-time commitments will be published before a production-ready release.
 
 Security-sensitive areas include:
 
-- Keystone credentials and Kubernetes Secrets;
-- cross-namespace references;
-- OpenStack project and resource isolation;
-- resource identity, adoption, and deletion;
-- security-group management;
-- TLS material and Barbican;
-- controller RBAC;
-- release images and supply chain.
+- Keystone credentials and Kubernetes Secrets
+- cross-namespace references
+- OpenStack project and resource isolation
+- resource identity, adoption, and deletion
+- security-group management
+- TLS material and Barbican
+- controller RBAC
+- release images and supply chain
