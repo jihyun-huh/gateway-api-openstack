@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Gateway API questions
+    url: https://gateway-api.sigs.k8s.io/
+    about: Check the upstream Gateway API documentation and community resources.
+  - name: cloud-provider-openstack issues
+    url: https://github.com/kubernetes/cloud-provider-openstack/issues
+    about: Use this for OCCM, Cinder CSI, and Manila CSI behavior not owned by this project.

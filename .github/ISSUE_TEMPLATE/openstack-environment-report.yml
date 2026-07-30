@@ -1,0 +1,63 @@
+name: OpenStack environment report
+description: Share compatibility evidence from an OpenStack environment.
+title: "[Environment]: "
+labels:
+  - kind/provider-report
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share only information you are authorized to publish. Never include
+        credentials, tenant IDs, public IPs, or customer names.
+  - type: input
+    id: environment
+    attributes:
+      label: Public environment or organization name
+      description: Use “anonymous” if the name cannot be published.
+    validations:
+      required: true
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes and Gateway API versions
+    validations:
+      required: true
+  - type: input
+    id: openstack
+    attributes:
+      label: OpenStack and Octavia versions
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Octavia provider
+    validations:
+      required: true
+  - type: input
+    id: networking
+    attributes:
+      label: CNI and backend reachability model
+    validations:
+      required: true
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Capabilities tested
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results and reproducible evidence
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Publication checks
+      options:
+        - label: I am authorized to publish this information.
+          required: true
+        - label: I removed credentials and private cloud identifiers.
+          required: true

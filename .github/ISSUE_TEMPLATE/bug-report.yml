@@ -1,0 +1,79 @@
+name: Bug report
+description: Report reproducible incorrect controller behavior.
+title: "[Bug]: "
+labels:
+  - kind/bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials or private tenant data. Report security
+        vulnerabilities using the private process in SECURITY.md.
+  - type: input
+    id: controller-version
+    attributes:
+      label: Controller version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: gateway-api-version
+    attributes:
+      label: Gateway API version
+      placeholder: v1.6.1
+    validations:
+      required: true
+  - type: input
+    id: openstack-version
+    attributes:
+      label: OpenStack and Octavia versions
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Octavia provider
+      placeholder: amphora, ovn, or vendor provider
+    validations:
+      required: true
+  - type: dropdown
+    id: member-mode
+    attributes:
+      label: Backend member mode
+      options:
+        - NodePort
+        - Pod IP
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Relevant Kubernetes status, events, and redacted logs
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials and private cloud identifiers.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

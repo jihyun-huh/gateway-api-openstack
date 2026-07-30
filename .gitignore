@@ -1,0 +1,32 @@
+# Binaries and build output
+/bin/
+/dist/
+/cover.out
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local environment
+.env
+.envrc
+.idea/
+.vscode/
+.DS_Store
+
+# Credentials and local cloud configuration
+clouds.yaml
+secure.yaml
+kubeconfig
+*.pem
+*.key
+
+# Test output
+/_artifacts/
+/test-results/
+
+# Phase 0 probe state and reports
+probe-state.json
+probe-report.json
+phase-0-results/

@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-api-openstack-probe
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-nginx
+  namespace: gateway-api-openstack-probe
+data:
+  default.conf: |
+    server {
+      listen 8080;
+
+      location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+      }
+
+      location / {
+        add_header Content-Type text/plain;
+        return 200 "gateway-api-openstack phase-0\n";
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: gateway-api-openstack-probe
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-api-openstack-probe
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-api-openstack-probe
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.28.0-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: backend-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: gateway-api-openstack-probe
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: gateway-api-openstack-probe
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 32080

@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a focused Gateway API or OpenStack capability.
+title: "[Feature]: "
+labels:
+  - kind/feature
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user or operator problem before the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Concrete use case
+    validations:
+      required: true
+  - type: input
+    id: gateway-feature
+    attributes:
+      label: Related Gateway API resource or feature
+  - type: input
+    id: provider
+    attributes:
+      label: Required Octavia provider capability
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+  - type: textarea
+    id: portability
+    attributes:
+      label: Portability and conformance considerations
+  - type: checkboxes
+    id: ownership
+    attributes:
+      label: Ownership
+      options:
+        - label: The proposal does not require adopting or mutating OCCM-owned resources.
+          required: true
