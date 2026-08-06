@@ -20,17 +20,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"time"
 
-	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/monitors"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
+	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
 
 // Cleanup resumes deletion using a state file. It refuses to delete any
@@ -40,10 +39,6 @@ func Cleanup(ctx context.Context, cfg CleanupConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := requireAuthenticationEnvironment(); err != nil {
-		return err
-	}
-
 	region := cfg.Region
 	if region == "" {
 		region = state.Region
@@ -81,31 +76,31 @@ func cleanupWithClients(
 
 	loadBalancerExists := false
 	if state.LoadBalancerID != "" {
-		loadBalancer, err := loadbalancers.Get(ctx, clients.loadBalancer, state.LoadBalancerID).Extract()
+		loadBalancer, err := loadbalancers.Get(ctx, clients.LoadBalancer, state.LoadBalancerID).Extract()
 		switch {
 		case err == nil:
 			if !identity.Matches(loadBalancer.Tags, roleLoadBalancer) {
 				return errors.New("refusing cleanup: load balancer identity does not match state")
 			}
 			loadBalancerExists = true
-		case isNotFound(err):
+		case cloudopenstack.IsNotFound(err):
 		default:
 			return fmt.Errorf("inspect load balancer before cleanup: %w", err)
 		}
 	}
 
 	if state.FloatingIPID != "" {
-		floatingIP, err := floatingips.Get(ctx, clients.network, state.FloatingIPID).Extract()
+		floatingIP, err := floatingips.Get(ctx, clients.Network, state.FloatingIPID).Extract()
 		switch {
 		case err == nil:
 			if !identity.MatchesDescription(floatingIP.Description, roleFloatingIP) ||
 				floatingIP.PortID != state.VIPPortID {
 				return errors.New("refusing cleanup: Floating IP identity does not match state")
 			}
-			if err := floatingips.Delete(ctx, clients.network, state.FloatingIPID).ExtractErr(); err != nil {
+			if err := floatingips.Delete(ctx, clients.Network, state.FloatingIPID).ExtractErr(); err != nil {
 				return fmt.Errorf("delete Floating IP: %w", err)
 			}
-		case isNotFound(err):
+		case cloudopenstack.IsNotFound(err):
 		default:
 			return fmt.Errorf("inspect Floating IP before cleanup: %w", err)
 		}
@@ -132,15 +127,15 @@ func cleanupWithClients(
 		}
 		if err := loadbalancers.Delete(
 			ctx,
-			clients.loadBalancer,
+			clients.LoadBalancer,
 			state.LoadBalancerID,
 			loadbalancers.DeleteOpts{Cascade: false},
 		).ExtractErr(); err != nil {
 			return fmt.Errorf("delete load balancer: %w", err)
 		}
-		if err := waitLoadBalancerDeleted(
+		if err := cloudopenstack.WaitLoadBalancerDeleted(
 			ctx,
-			clients.loadBalancer,
+			clients.LoadBalancer,
 			state.LoadBalancerID,
 			timeout,
 			interval,
@@ -166,11 +161,11 @@ func deleteL7Rule(
 	}
 	rule, err := l7policies.GetRule(
 		ctx,
-		clients.loadBalancer,
+		clients.LoadBalancer,
 		state.L7PolicyID,
 		state.L7RuleID,
 	).Extract()
-	if isNotFound(err) {
+	if cloudopenstack.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -181,7 +176,7 @@ func deleteL7Rule(
 	}
 	if err := l7policies.DeleteRule(
 		ctx,
-		clients.loadBalancer,
+		clients.LoadBalancer,
 		state.L7PolicyID,
 		state.L7RuleID,
 	).ExtractErr(); err != nil {
@@ -199,8 +194,8 @@ func deleteL7Policy(
 	if state.L7PolicyID == "" {
 		return nil
 	}
-	policy, err := l7policies.Get(ctx, clients.loadBalancer, state.L7PolicyID).Extract()
-	if isNotFound(err) {
+	policy, err := l7policies.Get(ctx, clients.LoadBalancer, state.L7PolicyID).Extract()
+	if cloudopenstack.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -209,7 +204,7 @@ func deleteL7Policy(
 	if !state.Identity.Matches(policy.Tags, roleL7Policy) {
 		return errors.New("refusing cleanup: L7 policy identity does not match state")
 	}
-	if err := l7policies.Delete(ctx, clients.loadBalancer, state.L7PolicyID).ExtractErr(); err != nil {
+	if err := l7policies.Delete(ctx, clients.LoadBalancer, state.L7PolicyID).ExtractErr(); err != nil {
 		return fmt.Errorf("delete L7 policy: %w", err)
 	}
 	return waitAfterChildDelete(ctx, clients, state.LoadBalancerID, timeout, interval)
@@ -224,8 +219,8 @@ func deleteMonitor(
 	if state.MonitorID == "" {
 		return nil
 	}
-	monitor, err := monitors.Get(ctx, clients.loadBalancer, state.MonitorID).Extract()
-	if isNotFound(err) {
+	monitor, err := monitors.Get(ctx, clients.LoadBalancer, state.MonitorID).Extract()
+	if cloudopenstack.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -234,7 +229,7 @@ func deleteMonitor(
 	if !state.Identity.Matches(monitor.Tags, roleMonitor) {
 		return errors.New("refusing cleanup: health monitor identity does not match state")
 	}
-	if err := monitors.Delete(ctx, clients.loadBalancer, state.MonitorID).ExtractErr(); err != nil {
+	if err := monitors.Delete(ctx, clients.LoadBalancer, state.MonitorID).ExtractErr(); err != nil {
 		return fmt.Errorf("delete health monitor: %w", err)
 	}
 	return waitAfterChildDelete(ctx, clients, state.LoadBalancerID, timeout, interval)
@@ -247,8 +242,8 @@ func deleteMembers(
 	timeout, interval time.Duration,
 ) error {
 	for _, memberID := range state.MemberIDs {
-		member, err := pools.GetMember(ctx, clients.loadBalancer, state.PoolID, memberID).Extract()
-		if isNotFound(err) {
+		member, err := pools.GetMember(ctx, clients.LoadBalancer, state.PoolID, memberID).Extract()
+		if cloudopenstack.IsNotFound(err) {
 			continue
 		}
 		if err != nil {
@@ -259,7 +254,7 @@ func deleteMembers(
 		}
 		if err := pools.DeleteMember(
 			ctx,
-			clients.loadBalancer,
+			clients.LoadBalancer,
 			state.PoolID,
 			memberID,
 		).ExtractErr(); err != nil {
@@ -287,8 +282,8 @@ func deletePool(
 	if state.PoolID == "" {
 		return nil
 	}
-	pool, err := pools.Get(ctx, clients.loadBalancer, state.PoolID).Extract()
-	if isNotFound(err) {
+	pool, err := pools.Get(ctx, clients.LoadBalancer, state.PoolID).Extract()
+	if cloudopenstack.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -297,7 +292,7 @@ func deletePool(
 	if !state.Identity.Matches(pool.Tags, rolePool) {
 		return errors.New("refusing cleanup: pool identity does not match state")
 	}
-	if err := pools.Delete(ctx, clients.loadBalancer, state.PoolID).ExtractErr(); err != nil {
+	if err := pools.Delete(ctx, clients.LoadBalancer, state.PoolID).ExtractErr(); err != nil {
 		return fmt.Errorf("delete pool: %w", err)
 	}
 	return waitAfterChildDelete(ctx, clients, state.LoadBalancerID, timeout, interval)
@@ -312,8 +307,8 @@ func deleteListener(
 	if state.ListenerID == "" {
 		return nil
 	}
-	listener, err := listeners.Get(ctx, clients.loadBalancer, state.ListenerID).Extract()
-	if isNotFound(err) {
+	listener, err := listeners.Get(ctx, clients.LoadBalancer, state.ListenerID).Extract()
+	if cloudopenstack.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
@@ -322,7 +317,7 @@ func deleteListener(
 	if !state.Identity.Matches(listener.Tags, roleListener) {
 		return errors.New("refusing cleanup: listener identity does not match state")
 	}
-	if err := listeners.Delete(ctx, clients.loadBalancer, state.ListenerID).ExtractErr(); err != nil {
+	if err := listeners.Delete(ctx, clients.LoadBalancer, state.ListenerID).ExtractErr(); err != nil {
 		return fmt.Errorf("delete listener: %w", err)
 	}
 	return waitAfterChildDelete(ctx, clients, state.LoadBalancerID, timeout, interval)
@@ -334,16 +329,12 @@ func waitAfterChildDelete(
 	loadBalancerID string,
 	timeout, interval time.Duration,
 ) error {
-	_, err := waitLoadBalancerActive(
+	_, err := cloudopenstack.WaitLoadBalancerActive(
 		ctx,
-		clients.loadBalancer,
+		clients.LoadBalancer,
 		loadBalancerID,
 		timeout,
 		interval,
 	)
 	return err
-}
-
-func isNotFound(err error) bool {
-	return gophercloud.ResponseCodeIs(err, http.StatusNotFound)
 }

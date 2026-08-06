@@ -57,7 +57,7 @@ func NewState(cfg Config) State {
 }
 
 // CreateState claims a new state path without overwriting an earlier run.
-func CreateState(path string, state State) error {
+func CreateState(path string, state State) (returnErr error) {
 	if path == "" {
 		return errors.New("state path must not be empty")
 	}
@@ -80,11 +80,17 @@ func CreateState(path string, state State) error {
 		return fmt.Errorf("create state file: %w", err)
 	}
 
-	complete := false
+	complete, closed := false, false
 	defer func() {
-		file.Close()
+		if !closed {
+			if err := file.Close(); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("close incomplete state: %w", err))
+			}
+		}
 		if !complete {
-			os.Remove(path)
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				returnErr = errors.Join(returnErr, fmt.Errorf("remove incomplete state: %w", err))
+			}
 		}
 	}()
 	if _, err := file.Write(data); err != nil {
@@ -96,12 +102,13 @@ func CreateState(path string, state State) error {
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close initial state: %w", err)
 	}
+	closed = true
 	complete = true
 	return nil
 }
 
 // SaveState atomically writes state with user-only permissions.
-func SaveState(path string, state State) error {
+func SaveState(path string, state State) (returnErr error) {
 	if path == "" {
 		return errors.New("state path must not be empty")
 	}
@@ -119,26 +126,37 @@ func SaveState(path string, state State) error {
 		return fmt.Errorf("create temporary state: %w", err)
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	closed, removeTemp := false, true
+	defer func() {
+		if !closed {
+			if err := temp.Close(); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("close temporary state: %w", err))
+			}
+		}
+		if removeTemp {
+			if err := os.Remove(tempName); err != nil && !errors.Is(err, os.ErrNotExist) {
+				returnErr = errors.Join(returnErr, fmt.Errorf("remove temporary state: %w", err))
+			}
+		}
+	}()
 
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
 		return fmt.Errorf("protect temporary state: %w", err)
 	}
 	if _, err := temp.Write(data); err != nil {
-		temp.Close()
 		return fmt.Errorf("write temporary state: %w", err)
 	}
 	if err := temp.Sync(); err != nil {
-		temp.Close()
 		return fmt.Errorf("sync temporary state: %w", err)
 	}
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary state: %w", err)
 	}
+	closed = true
 	if err := os.Rename(tempName, path); err != nil {
 		return fmt.Errorf("replace state: %w", err)
 	}
+	removeTemp = false
 	return nil
 }
 

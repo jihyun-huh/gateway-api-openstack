@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package probe
+package openstack
 
 import (
 	"context"
@@ -26,7 +26,9 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 )
 
-func waitLoadBalancerActive(
+// WaitLoadBalancerActive waits until Octavia has completed the current
+// asynchronous operation for a load balancer.
+func WaitLoadBalancerActive(
 	ctx context.Context,
 	client *gophercloud.ServiceClient,
 	loadBalancerID string,
@@ -38,7 +40,6 @@ func waitLoadBalancerActive(
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-
 	for {
 		loadBalancer, err := loadbalancers.Get(waitCtx, client, loadBalancerID).Extract()
 		if err != nil {
@@ -53,17 +54,14 @@ func waitLoadBalancerActive(
 
 		select {
 		case <-waitCtx.Done():
-			return nil, fmt.Errorf(
-				"wait for load balancer %s to become ACTIVE: %w",
-				loadBalancerID,
-				waitCtx.Err(),
-			)
+			return nil, fmt.Errorf("wait for load balancer %s to become ACTIVE: %w", loadBalancerID, waitCtx.Err())
 		case <-ticker.C:
 		}
 	}
 }
 
-func waitLoadBalancerDeleted(
+// WaitLoadBalancerDeleted waits until Octavia returns 404 for a load balancer.
+func WaitLoadBalancerDeleted(
 	ctx context.Context,
 	client *gophercloud.ServiceClient,
 	loadBalancerID string,
@@ -75,7 +73,6 @@ func waitLoadBalancerDeleted(
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-
 	for {
 		_, err := loadbalancers.Get(waitCtx, client, loadBalancerID).Extract()
 		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
@@ -87,12 +84,23 @@ func waitLoadBalancerDeleted(
 
 		select {
 		case <-waitCtx.Done():
-			return fmt.Errorf(
-				"wait for load balancer %s deletion: %w",
-				loadBalancerID,
-				waitCtx.Err(),
-			)
+			return fmt.Errorf("wait for load balancer %s deletion: %w", loadBalancerID, waitCtx.Err())
 		case <-ticker.C:
 		}
 	}
 }
+
+// IsNotFound reports whether an OpenStack request returned HTTP 404.
+func IsNotFound(err error) bool {
+	return gophercloud.ResponseCodeIs(err, http.StatusNotFound)
+}
+
+func waitLoadBalancerActive(ctx context.Context, client *gophercloud.ServiceClient, id string, timeout, interval time.Duration) (*loadbalancers.LoadBalancer, error) {
+	return WaitLoadBalancerActive(ctx, client, id, timeout, interval)
+}
+
+func waitLoadBalancerDeleted(ctx context.Context, client *gophercloud.ServiceClient, id string, timeout, interval time.Duration) error {
+	return WaitLoadBalancerDeleted(ctx, client, id, timeout, interval)
+}
+
+func isNotFound(err error) bool { return IsNotFound(err) }

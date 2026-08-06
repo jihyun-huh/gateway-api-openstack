@@ -35,6 +35,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/providers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
+	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
 
 const (
@@ -93,10 +94,6 @@ func Run(ctx context.Context, cfg Config) (report *Report, runErr error) {
 		}
 	}()
 
-	if err := requireAuthenticationEnvironment(); err != nil {
-		return report, err
-	}
-
 	started := time.Now()
 	clients, err := newServiceClients(
 		ctx,
@@ -114,8 +111,8 @@ func Run(ctx context.Context, cfg Config) (report *Report, runErr error) {
 		return report, err
 	}
 
-	currentRunner.listLoadbalancerProviders(ctx)
-	if err := currentRunner.createAndUpdateResources(ctx); err != nil {
+	currentRunner.discoverProviders(ctx)
+	if err := currentRunner.createAndExerciseResources(ctx); err != nil {
 		return report, err
 	}
 	if err := currentRunner.inspectResources(ctx); err != nil {
@@ -129,9 +126,9 @@ func Run(ctx context.Context, cfg Config) (report *Report, runErr error) {
 	return report, nil
 }
 
-func (r *runner) listLoadbalancerProviders(ctx context.Context) {
+func (r *runner) discoverProviders(ctx context.Context) {
 	started := time.Now()
-	pages, err := providers.List(r.clients.loadBalancer, providers.ListOpts{}).AllPages(ctx)
+	pages, err := providers.List(r.clients.LoadBalancer, providers.ListOpts{}).AllPages(ctx)
 	if err == nil {
 		var available []providers.Provider
 		available, err = providers.ExtractProviders(pages)
@@ -142,24 +139,10 @@ func (r *runner) listLoadbalancerProviders(ctx context.Context) {
 			})
 		}
 	}
-	r.record("list", "octavia providers", "", started, err)
+	r.record("list", "octavia-providers", "", started, err)
 }
 
-func (r *runner) record(operation, resource, resourceID string, started time.Time, err error) {
-	step := StepRecord{
-		Operation:  operation,
-		Resource:   resource,
-		ResourceID: resourceID,
-		Duration:   time.Since(started),
-		Succeeded:  err == nil,
-	}
-	if err != nil {
-		step.Error = err.Error()
-	}
-	r.report.Steps = append(r.report.Steps, step)
-}
-
-func (r *runner) createAndUpdateResources(ctx context.Context) error {
+func (r *runner) createAndExerciseResources(ctx context.Context) error {
 	identity := r.state.Identity
 
 	loadBalancerTags, err := identity.Tags(roleLoadBalancer)
@@ -167,7 +150,7 @@ func (r *runner) createAndUpdateResources(ctx context.Context) error {
 		return err
 	}
 	started := time.Now()
-	loadBalancer, err := loadbalancers.Create(ctx, r.clients.loadBalancer, loadbalancers.CreateOpts{
+	loadBalancer, err := loadbalancers.Create(ctx, r.clients.LoadBalancer, loadbalancers.CreateOpts{
 		Name:         r.resourceName(roleLoadBalancer),
 		Description:  identity.Description(roleLoadBalancer) + "; phase=created",
 		VipSubnetID:  r.config.VIPSubnetID,
@@ -192,7 +175,7 @@ func (r *runner) createAndUpdateResources(ctx context.Context) error {
 
 	verifiedDescription := identity.Description(roleLoadBalancer) + "; phase=verified"
 	started = time.Now()
-	_, err = loadbalancers.Update(ctx, r.clients.loadBalancer, loadBalancer.ID, loadbalancers.UpdateOpts{
+	_, err = loadbalancers.Update(ctx, r.clients.LoadBalancer, loadBalancer.ID, loadbalancers.UpdateOpts{
 		Description: &verifiedDescription,
 		Tags:        &loadBalancerTags,
 	}).Extract()
@@ -218,7 +201,7 @@ func (r *runner) createAndUpdateResources(ctx context.Context) error {
 	if err := r.createAndUpdateMembers(ctx); err != nil {
 		return err
 	}
-	if err := r.createAndUpdateHealthMonitor(ctx); err != nil {
+	if err := r.createAndUpdateMonitor(ctx); err != nil {
 		return err
 	}
 	if err := r.createAndUpdateL7Policy(ctx); err != nil {
@@ -228,14 +211,12 @@ func (r *runner) createAndUpdateResources(ctx context.Context) error {
 		return err
 	}
 	return nil
-
 }
 
 func (r *runner) createAndUpdateFloatingIP(ctx context.Context) error {
 	createdDescription := r.state.Identity.Description(roleFloatingIP) + "; phase=created"
 	started := time.Now()
-
-	floatingIP, err := floatingips.Create(ctx, r.clients.network, floatingips.CreateOpts{
+	floatingIP, err := floatingips.Create(ctx, r.clients.Network, floatingips.CreateOpts{
 		Description:       createdDescription,
 		FloatingNetworkID: r.config.ExternalNetworkID,
 		PortID:            r.state.VIPPortID,
@@ -244,7 +225,6 @@ func (r *runner) createAndUpdateFloatingIP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create Floating IP: %w", err)
 	}
-
 	r.state.FloatingIPID = floatingIP.ID
 	r.report.Resources.FloatingIPID = floatingIP.ID
 	r.report.Resources.FloatingIP = floatingIP.FloatingIP
@@ -253,9 +233,8 @@ func (r *runner) createAndUpdateFloatingIP(ctx context.Context) error {
 	}
 
 	verifiedDescription := r.state.Identity.Description(roleFloatingIP) + "; phase=verified"
-
 	started = time.Now()
-	_, err = floatingips.Update(ctx, r.clients.network, floatingIP.ID, floatingips.UpdateOpts{
+	_, err = floatingips.Update(ctx, r.clients.Network, floatingIP.ID, floatingips.UpdateOpts{
 		Description: &verifiedDescription,
 	}).Extract()
 	r.record("update", roleFloatingIP, floatingIP.ID, started, err)
@@ -271,7 +250,7 @@ func (r *runner) createAndUpdateListener(ctx context.Context) error {
 		return err
 	}
 	started := time.Now()
-	listener, err := listeners.Create(ctx, r.clients.loadBalancer, listeners.CreateOpts{
+	listener, err := listeners.Create(ctx, r.clients.LoadBalancer, listeners.CreateOpts{
 		LoadbalancerID: r.state.LoadBalancerID,
 		Protocol:       listeners.ProtocolHTTP,
 		ProtocolPort:   r.config.ListenerPort,
@@ -295,7 +274,7 @@ func (r *runner) createAndUpdateListener(ctx context.Context) error {
 
 	description := r.state.Identity.Description(roleListener) + "; phase=verified"
 	started = time.Now()
-	_, err = listeners.Update(ctx, r.clients.loadBalancer, listener.ID, listeners.UpdateOpts{
+	_, err = listeners.Update(ctx, r.clients.LoadBalancer, listener.ID, listeners.UpdateOpts{
 		Description: &description,
 		Tags:        &tags,
 	}).Extract()
@@ -313,7 +292,7 @@ func (r *runner) createAndUpdatePool(ctx context.Context) error {
 		return err
 	}
 	started := time.Now()
-	pool, err := pools.Create(ctx, r.clients.loadBalancer, pools.CreateOpts{
+	pool, err := pools.Create(ctx, r.clients.LoadBalancer, pools.CreateOpts{
 		LBMethod:       pools.LBMethodRoundRobin,
 		Protocol:       pools.ProtocolHTTP,
 		LoadbalancerID: r.state.LoadBalancerID,
@@ -337,7 +316,7 @@ func (r *runner) createAndUpdatePool(ctx context.Context) error {
 
 	description := r.state.Identity.Description(rolePool) + "; phase=verified"
 	started = time.Now()
-	_, err = pools.Update(ctx, r.clients.loadBalancer, pool.ID, pools.UpdateOpts{
+	_, err = pools.Update(ctx, r.clients.LoadBalancer, pool.ID, pools.UpdateOpts{
 		Description: &description,
 		Tags:        &tags,
 	}).Extract()
@@ -356,7 +335,7 @@ func (r *runner) createAndUpdateMembers(ctx context.Context) error {
 			return err
 		}
 		started := time.Now()
-		member, err := pools.CreateMember(ctx, r.clients.loadBalancer, r.state.PoolID, pools.CreateMemberOpts{
+		member, err := pools.CreateMember(ctx, r.clients.LoadBalancer, r.state.PoolID, pools.CreateMemberOpts{
 			Address:      address,
 			ProtocolPort: r.config.MemberPort,
 			Name:         fmt.Sprintf("%s-%d", r.resourceName(roleMember), index),
@@ -381,7 +360,7 @@ func (r *runner) createAndUpdateMembers(ctx context.Context) error {
 		started = time.Now()
 		_, err = pools.UpdateMember(
 			ctx,
-			r.clients.loadBalancer,
+			r.clients.LoadBalancer,
 			r.state.PoolID,
 			member.ID,
 			pools.UpdateMemberOpts{
@@ -400,13 +379,13 @@ func (r *runner) createAndUpdateMembers(ctx context.Context) error {
 	return nil
 }
 
-func (r *runner) createAndUpdateHealthMonitor(ctx context.Context) error {
+func (r *runner) createAndUpdateMonitor(ctx context.Context) error {
 	tags, err := r.state.Identity.Tags(roleMonitor)
 	if err != nil {
 		return err
 	}
 	started := time.Now()
-	monitor, err := monitors.Create(ctx, r.clients.loadBalancer, monitors.CreateOpts{
+	monitor, err := monitors.Create(ctx, r.clients.LoadBalancer, monitors.CreateOpts{
 		PoolID:         r.state.PoolID,
 		Type:           monitors.TypeHTTP,
 		Delay:          10,
@@ -435,7 +414,7 @@ func (r *runner) createAndUpdateHealthMonitor(ctx context.Context) error {
 
 	updatedName := r.resourceName(roleMonitor) + "-verified"
 	started = time.Now()
-	_, err = monitors.Update(ctx, r.clients.loadBalancer, monitor.ID, monitors.UpdateOpts{
+	_, err = monitors.Update(ctx, r.clients.LoadBalancer, monitor.ID, monitors.UpdateOpts{
 		Name: &updatedName,
 		Tags: tags,
 	}).Extract()
@@ -453,7 +432,7 @@ func (r *runner) createAndUpdateL7Policy(ctx context.Context) error {
 		return err
 	}
 	started := time.Now()
-	policy, err := l7policies.Create(ctx, r.clients.loadBalancer, l7policies.CreateOpts{
+	policy, err := l7policies.Create(ctx, r.clients.LoadBalancer, l7policies.CreateOpts{
 		Name:           r.resourceName(roleL7Policy),
 		ListenerID:     r.state.ListenerID,
 		Action:         l7policies.ActionRedirectToPool,
@@ -478,7 +457,7 @@ func (r *runner) createAndUpdateL7Policy(ctx context.Context) error {
 
 	description := r.state.Identity.Description(roleL7Policy) + "; phase=verified"
 	started = time.Now()
-	_, err = l7policies.Update(ctx, r.clients.loadBalancer, policy.ID, l7policies.UpdateOpts{
+	_, err = l7policies.Update(ctx, r.clients.LoadBalancer, policy.ID, l7policies.UpdateOpts{
 		Description: &description,
 		Tags:        &tags,
 	}).Extract()
@@ -498,7 +477,7 @@ func (r *runner) createAndUpdateL7Rule(ctx context.Context) error {
 	started := time.Now()
 	rule, err := l7policies.CreateRule(
 		ctx,
-		r.clients.loadBalancer,
+		r.clients.LoadBalancer,
 		r.state.L7PolicyID,
 		l7policies.CreateRuleOpts{
 			RuleType:     l7policies.TypePath,
@@ -524,7 +503,7 @@ func (r *runner) createAndUpdateL7Rule(ctx context.Context) error {
 	started = time.Now()
 	_, err = l7policies.UpdateRule(
 		ctx,
-		r.clients.loadBalancer,
+		r.clients.LoadBalancer,
 		r.state.L7PolicyID,
 		rule.ID,
 		l7policies.UpdateRuleOpts{
@@ -546,20 +525,20 @@ func (r *runner) inspectResources(ctx context.Context) error {
 	started := time.Now()
 	identity := r.state.Identity
 
-	loadBalancer, err := loadbalancers.Get(ctx, r.clients.loadBalancer, r.state.LoadBalancerID).Extract()
+	loadBalancer, err := loadbalancers.Get(ctx, r.clients.LoadBalancer, r.state.LoadBalancerID).Extract()
 	if err == nil && !identity.Matches(loadBalancer.Tags, roleLoadBalancer) {
 		err = errors.New("load balancer identity mismatch")
 	}
 	if err == nil {
 		var listener *listeners.Listener
-		listener, err = listeners.Get(ctx, r.clients.loadBalancer, r.state.ListenerID).Extract()
+		listener, err = listeners.Get(ctx, r.clients.LoadBalancer, r.state.ListenerID).Extract()
 		if err == nil && !identity.Matches(listener.Tags, roleListener) {
 			err = errors.New("listener identity mismatch")
 		}
 	}
 	if err == nil {
 		var pool *pools.Pool
-		pool, err = pools.Get(ctx, r.clients.loadBalancer, r.state.PoolID).Extract()
+		pool, err = pools.Get(ctx, r.clients.LoadBalancer, r.state.PoolID).Extract()
 		if err == nil && !identity.Matches(pool.Tags, rolePool) {
 			err = errors.New("pool identity mismatch")
 		}
@@ -569,21 +548,21 @@ func (r *runner) inspectResources(ctx context.Context) error {
 			break
 		}
 		var member *pools.Member
-		member, err = pools.GetMember(ctx, r.clients.loadBalancer, r.state.PoolID, memberID).Extract()
+		member, err = pools.GetMember(ctx, r.clients.LoadBalancer, r.state.PoolID, memberID).Extract()
 		if err == nil && !identity.Matches(member.Tags, roleMember) {
 			err = fmt.Errorf("member %s identity mismatch", memberID)
 		}
 	}
 	if err == nil {
 		var monitor *monitors.Monitor
-		monitor, err = monitors.Get(ctx, r.clients.loadBalancer, r.state.MonitorID).Extract()
+		monitor, err = monitors.Get(ctx, r.clients.LoadBalancer, r.state.MonitorID).Extract()
 		if err == nil && !identity.Matches(monitor.Tags, roleMonitor) {
 			err = errors.New("health monitor identity mismatch")
 		}
 	}
 	if err == nil {
 		var policy *l7policies.L7Policy
-		policy, err = l7policies.Get(ctx, r.clients.loadBalancer, r.state.L7PolicyID).Extract()
+		policy, err = l7policies.Get(ctx, r.clients.LoadBalancer, r.state.L7PolicyID).Extract()
 		if err == nil && !identity.Matches(policy.Tags, roleL7Policy) {
 			err = errors.New("L7 policy identity mismatch")
 		}
@@ -592,7 +571,7 @@ func (r *runner) inspectResources(ctx context.Context) error {
 		var rule *l7policies.Rule
 		rule, err = l7policies.GetRule(
 			ctx,
-			r.clients.loadBalancer,
+			r.clients.LoadBalancer,
 			r.state.L7PolicyID,
 			r.state.L7RuleID,
 		).Extract()
@@ -602,10 +581,10 @@ func (r *runner) inspectResources(ctx context.Context) error {
 	}
 	if err == nil && r.state.FloatingIPID != "" {
 		var floatingIP *floatingips.FloatingIP
-		floatingIP, err = floatingips.Get(ctx, r.clients.network, r.state.FloatingIPID).Extract()
+		floatingIP, err = floatingips.Get(ctx, r.clients.Network, r.state.FloatingIPID).Extract()
 		if err == nil && (!identity.MatchesDescription(floatingIP.Description, roleFloatingIP) ||
 			floatingIP.PortID != r.state.VIPPortID) {
-			err = errors.New("Floating IP identity mismatch")
+			err = errors.New("floating IP identity mismatch")
 		}
 	}
 
@@ -642,7 +621,6 @@ func (r *runner) checkTraffic(ctx context.Context) error {
 	started := time.Now()
 	response, err := http.DefaultClient.Do(request)
 	if err == nil {
-		defer response.Body.Close()
 		record.StatusCode = response.StatusCode
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
 		if readErr != nil {
@@ -654,6 +632,9 @@ func (r *runner) checkTraffic(ctx context.Context) error {
 		}
 		if err == nil && (response.StatusCode < 200 || response.StatusCode >= 400) {
 			err = fmt.Errorf("unexpected HTTP status %d", response.StatusCode)
+		}
+		if closeErr := response.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close traffic response: %w", closeErr)
 		}
 	}
 	record.Succeeded = err == nil
@@ -668,9 +649,9 @@ func (r *runner) checkTraffic(ctx context.Context) error {
 }
 
 func (r *runner) waitActive(ctx context.Context) (*loadbalancers.LoadBalancer, error) {
-	return waitLoadBalancerActive(
+	return cloudopenstack.WaitLoadBalancerActive(
 		ctx,
-		r.clients.loadBalancer,
+		r.clients.LoadBalancer,
 		r.state.LoadBalancerID,
 		r.config.OperationTimeout,
 		r.config.PollInterval,
@@ -681,9 +662,23 @@ func (r *runner) saveState() error {
 	return SaveState(r.config.StateFile, r.state)
 }
 
+func (r *runner) record(operation, resource, resourceID string, started time.Time, err error) {
+	step := StepRecord{
+		Operation:  operation,
+		Resource:   resource,
+		ResourceID: resourceID,
+		Duration:   time.Since(started),
+		Succeeded:  err == nil,
+	}
+	if err != nil {
+		step.Error = err.Error()
+	}
+	r.report.Steps = append(r.report.Steps, step)
+}
+
 func (r *runner) resourceName(role string) string {
 	parts := []string{
-		"gateway-test-0",
+		"gateway-api-openstack-p0",
 		r.state.Identity.GatewayNamespace,
 		r.state.Identity.GatewayName,
 		shortValue(r.state.Identity.GatewayUID, 8),
