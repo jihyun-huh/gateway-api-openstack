@@ -1,12 +1,12 @@
 # Gateway API for OpenStack
 
 > [!IMPORTANT]
-> This project is in pre-alpha. The architecture is being validated and no
-> production release is available yet.
+> This project is in pre-alpha. Phase 1 controller implementation is in
+> progress and no production release is available yet.
 >
-> This repository does not yet contain a working controller.
-> The architecture, API surface, project name, and roadmap may change
-> as the initial prototype is implemented and evaluated.
+> The repository contains an early controller and deployment manifests, but
+> the complete controller path has not yet passed a published real-cloud
+> end-to-end suite. The Phase 0 capability probe is not controller E2E proof.
 >
 > Do not use this project in production.
 
@@ -44,14 +44,14 @@ flowchart TD
 
     G["Gateway API resources"] --> CTRL["openstack-gateway-controller (here!)"]
     CTRL --> OLB["Gateway-owned Octavia LB"]
-    CTRL --> K8S["Service and EndpointSlice reads"]
+    CTRL --> K8S["Service, EndpointSlice, and Node reads"]
 ```
 
 The controller:
 
 - watches only Gateway API resources assigned to its controller name
-- reads backend `Service`, `EndpointSlice`, `Secret`, and `ReferenceGrant`
-  resources as required
+- reads backend `Service`, `EndpointSlice`, and `Node` resources for the Phase 1
+  NodePort path, credentials are projected from a Kubernetes Secret
 - **creates only Gateway-owned OpenStack resources**
 - never adopts, mutates, or deletes an OCCM-owned load balancer
 - records an immutable Kubernetes object UID and controller identity on every
@@ -80,7 +80,8 @@ The first native vertical slice targets:
 - `GatewayClass`, `Gateway`, and `HTTPRoute`
 - HTTP listeners
 - hostname, exact-path, and path-prefix matching
-- a single Service backend per rule
+- one HTTPRoute per Gateway, with one rule and one Service backend
+- NodePort members discovered from ready Nodes and EndpointSlices
 - one Octavia load balancer per Gateway
 - Octavia listeners, L7 policies and rules, pools, members, and health monitors
 - Floating IP allocation
@@ -104,17 +105,34 @@ resource status rather than ignored.
 
 ## Project status
 
-Current milestone: **Phase 0 — feasibility and ownership validation**.
+Current milestone: **Phase 1 — HTTP MVP implementation**.
 
-The immediate work is to validate:
+The Phase 0 capability probe has exercised the required Octavia and Neutron
+resource primitives in one environment. That result is environment-specific
+and does not establish that the Kubernetes controller is end-to-end ready or
+that every OpenStack cloud is compatible.
 
-1. Octavia and Neutron resource mapping.
-2. Backend reachability using NodePort and, where routable, Pod IP members.
-3. Safe resource identity, deletion, and recovery.
-4. The Gateway API conformance gap for the selected Octavia provider.
-5. The reference deployment on an OpenStack Kubernetes environment.
+Current Phase 1 work is focused on:
+
+1. completing and testing the `GatewayClass`, `Gateway`, and `HTTPRoute`
+   reconciliation paths.
+2. validating identity-safe deletion and restart behavior.
+3. exercising the controller end to end with an Amphora-backed NodePort
+   Service.
+4. documenting the exact tested environment and remaining conformance gaps.
 
 See [ROADMAP.md](ROADMAP.md) for the complete phased plan.
+
+## Getting started
+
+The repository includes a minimal Kustomize deployment and a constrained
+NodePort example for development environments. It requires an operator-built
+controller image and a Kubernetes Secret containing `clouds.yaml`; no supported
+image is published yet.
+
+See [Getting started with the Phase 1 controller](docs/getting-started.md) for
+prerequisites, configuration, installation, verification, limitations, and the
+safe removal order.
 
 ## Community direction
 
