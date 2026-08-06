@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openstack-gateway-controller-config
+  labels:
+    app.kubernetes.io/name: openstack-gateway-controller
+    app.kubernetes.io/part-of: gateway-api-openstack
+data:
+  # Replace this example domain in both this ConfigMap and each GatewayClass.
+  GATEWAY_OPENSTACK_CONTROLLER_NAME: example.com/gateway-api-openstack
+  # This value must remain stable for the lifetime of managed OpenStack resources.
+  GATEWAY_OPENSTACK_CLUSTER_ID: replace-with-stable-cluster-id
+  GATEWAY_OPENSTACK_OCTAVIA_PROVIDER: amphora
+  GATEWAY_OPENSTACK_VIP_SUBNET_ID: replace-with-vip-subnet-id
+  GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID: ""
+  GATEWAY_OPENSTACK_MEMBER_SUBNET_ID: replace-with-member-subnet-id
+  GATEWAY_OPENSTACK_MEMBER_MODE: NodePort
+  GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE: InternalIP
+  GATEWAY_OPENSTACK_HEALTH_PATH: "/"
+  # The mounted clouds.yaml must contain an entry with this name.
+  OS_CLOUD: openstack
+  OS_CLIENT_CONFIG_FILE: /etc/openstack/clouds.yaml
+  # Leave empty to use region_name from clouds.yaml.
+  OS_REGION_NAME: ""

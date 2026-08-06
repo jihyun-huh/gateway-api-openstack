@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: openstack-gateway-system
+
+resources:
+  - namespace.yaml
+  - ../rbac
+  - ../manager
+
+# No controller image is published yet. Replace this image with an image built
+# from the source revision being deployed before applying this kustomization.
+images:
+  - name: controller
+    newName: example.invalid/openstack-gateway-controller
+    newTag: v0.1.0-dev
