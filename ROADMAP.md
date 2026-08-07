@@ -4,7 +4,7 @@ This document is a working plan, not a release commitment. The order and scope
 may change as the controller is implemented and tested against real OpenStack
 environments.
 
-The initial API baseline is the Gateway API Standard Channel from v1.5.1. Each
+The initial API baseline is the Gateway API Standard Channel from v1.6.1. Each
 controller release will pin the Gateway API version it supports.
 
 ## Scope
@@ -14,8 +14,9 @@ The first releases will focus on one path:
 - `GatewayClass`, `Gateway`, and `HTTPRoute`
 - OpenStack Octavia as the loadbalancing backend
 - an independent controller built with `controller-runtime` and Gophercloud
-- Amphora as the first verified Octavia provider
-- NodePort members as the first backend connectivity mode, and safe coexistence with `cloud-provider-openstack`.
+- Amphora as the first Octavia provider exercised by the capability probe
+- NodePort members as the first backend connectivity mode, and safe
+  coexistence with `cloud-provider-openstack`.
 
 The controller will own only resources created for its Gateway API objects. It
 will not reconcile `Service` objects of type `LoadBalancer`, and it will not
@@ -23,7 +24,7 @@ adopt resources created by cloud-provider-openstack or another controller.
 
 ## Phase 0 - Initialize and design
 
-**Status:** Current  
+**Status:** Initial capability probe completed - documentation remains iterative
 **Milestone:** `phase-0-initialize`
 
 The purpose of this phase is to test the assumptions behind the controller
@@ -106,11 +107,24 @@ in the repository.
 
 ## Phase 1 - HTTP MVP
 
-**Status:** Planned  
+**Status:** In progress
 **Milestone:** `v0.1.0`
 
 This phase implements the smallest useful end-to-end controller. It is not
 expected to cover the full Gateway API surface.
+
+### Current progress
+
+The source tree now contains the controller manager, the three Phase 1
+reconcilers, the Gophercloud provider boundary, identity-safe resource
+operations, unit tests, and a minimal Kustomize deployment with a NodePort
+example.
+
+The retained Phase 0 probe has exercised the individual Octavia and Neutron
+primitives in one environment. Before `v0.1.0`, the assembled controller path
+still needs a published real cloud end-to-end result covering traffic,
+controller restart, and ordered deletion. A versioned release image is not yet
+published.
 
 ### Controller foundation
 
@@ -139,7 +153,6 @@ Implement three reconcilers:
 - `Gateway`
 - `HTTPRoute`
 
-
 Use standard Gateway API conditions for invalid references, unsupported fields,
 and OpenStack provisioning failures.
 
@@ -153,10 +166,14 @@ and OpenStack provisioning failures.
 
 ### Known limitations
 
-- **Amphora** is the only verified provider.
+- **Amphora** is the only provider exercised by the Phase 0 probe, controller
+  E2E validation is still pending.
 - HTTP is the only supported listener protocol.
 - A Gateway has one listener.
-- An HTTPRoute has one rule and one backend.
+- A Gateway selects one HTTPRoute.
+- An HTTPRoute has one rule, at most one exact hostname, at most one exact or
+  path-prefix match, and one same-namespace backend.
+- NodePort is the only member mode.
 - Backend Services must meet the member-mode requirements selected in Phase 0.
 - Existing Octavia resources are never adopted.
 - Ingress resources are not reconciled.
@@ -182,7 +199,8 @@ the asynchronous and failure/prune conditions seen in real Octavia deployments.
 
 ### Reconciliation safety
 
-- Serialize updates that target the same load balancer. (fine reconcilier)
+- Serialize updates that target the same load balancer with a fine-grained
+  reconciliation lock.
 - Add bounded retries, exponential backoff, and operation timeouts.
 - Handle `PENDING_*`, `ERROR`, and unexpectedly missing resources.
 - Recover from partial creation, including a listener without its pool or a
@@ -335,7 +353,7 @@ case:
 ## Technical references
 
 - [Gateway API implementer's guide](https://gateway-api.sigs.k8s.io/guides/implementers-guide/)
-- [Gateway API v1.5.1 release](https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.5.1)
+- [Gateway API v1.6.1 release](https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.1)
 - [Gateway API conformance tests](https://github.com/kubernetes-sigs/gateway-api/tree/main/conformance)
 - [Octavia provider feature matrix](https://docs.openstack.org/octavia/latest/user/feature-classification/index.html)
 - [Gophercloud](https://github.com/gophercloud/gophercloud)
