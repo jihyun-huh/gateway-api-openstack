@@ -17,21 +17,16 @@ limitations under the License.
 package probe
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"errors"
-	"fmt"
 	"strings"
+
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
 
-const (
-	identityPrefix       = "gako."
-	controllerIdentifier = "openstack-gateway-controller"
-	maxTagLength         = 255
-)
+const controllerIdentifier = cloudopenstack.Phase0ControllerIdentifier
 
-// Identity is the immutable ownership tuple carried by every probe resource.
-// It mirrors the minimum identity that the future controller must enforce.
+// Identity preserves the Phase 0 state-file schema while delegating all tag
+// and description behavior to the production OpenStack identity implementation.
 type Identity struct {
 	ClusterID        string `json:"clusterID"`
 	Controller       string `json:"controller"`
@@ -40,7 +35,6 @@ type Identity struct {
 	GatewayUID       string `json:"gatewayUID"`
 }
 
-// NewIdentity builds an identity from a validated probe configuration.
 func NewIdentity(cfg Config) Identity {
 	return Identity{
 		ClusterID:        cfg.ClusterID,
@@ -51,100 +45,40 @@ func NewIdentity(cfg Config) Identity {
 	}
 }
 
-// Validate rejects an identity that cannot safely distinguish ownership.
-func (id Identity) Validate() error {
-	for name, value := range map[string]string{
-		"cluster ID":        id.ClusterID,
-		"controller":        id.Controller,
-		"gateway namespace": id.GatewayNamespace,
-		"gateway name":      id.GatewayName,
-		"gateway UID":       id.GatewayUID,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s must not be empty", name)
-		}
+func (id Identity) cloudIdentity() cloud.Identity {
+	return cloud.Identity{
+		ClusterID:        id.ClusterID,
+		Controller:       id.Controller,
+		GatewayNamespace: id.GatewayNamespace,
+		GatewayName:      id.GatewayName,
+		GatewayUID:       id.GatewayUID,
 	}
-	return nil
 }
 
-// Tags encodes the full identity and the resource role as Octavia tags.
+func (id Identity) Validate() error { return cloud.ValidateGatewayIdentity(id.cloudIdentity()) }
+
 func (id Identity) Tags(role string) ([]string, error) {
-	if err := id.Validate(); err != nil {
+	value, err := cloudopenstack.NewIdentity(id.cloudIdentity())
+	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(role) == "" {
-		return nil, errors.New("resource role must not be empty")
-	}
-
-	tags := []string{
-		identityPrefix + "managed=true",
-		tag("cluster", id.ClusterID),
-		tag("controller", id.Controller),
-		tag("namespace", id.GatewayNamespace),
-		tag("name", id.GatewayName),
-		tag("uid", id.GatewayUID),
-		tag("role", role),
-	}
-	for _, value := range tags {
-		if len(value) > maxTagLength {
-			return nil, fmt.Errorf("encoded identity tag exceeds %d bytes", maxTagLength)
-		}
-	}
-	return tags, nil
+	return value.GatewayTags(role)
 }
 
-// Matches returns true only when every expected identity tag is present.
 func (id Identity) Matches(tags []string, role string) bool {
-	expected, err := id.Tags(role)
-	if err != nil {
-		return false
-	}
-	actual := make(map[string]struct{}, len(tags))
-	for _, value := range tags {
-		actual[value] = struct{}{}
-	}
-	for _, value := range expected {
-		if _, ok := actual[value]; !ok {
-			return false
-		}
-	}
-	return true
+	value, err := cloudopenstack.NewIdentity(id.cloudIdentity())
+	return err == nil && value.MatchesGateway(tags, role)
 }
 
-// Description returns the stable prefix used to identify a Neutron Floating IP.
-// The digest covers the complete identity and role while keeping the value
-// within Neutron description limits.
 func (id Identity) Description(role string) string {
-	var digestInput strings.Builder
-	for _, value := range []string{
-		id.ClusterID,
-		id.Controller,
-		id.GatewayNamespace,
-		id.GatewayName,
-		id.GatewayUID,
-		role,
-	} {
-		fmt.Fprintf(&digestInput, "%d:", len(value))
-		digestInput.WriteString(value)
+	value, err := cloudopenstack.NewIdentity(id.cloudIdentity())
+	if err != nil {
+		return ""
 	}
-	digest := sha256.Sum256([]byte(digestInput.String()))
-
-	return fmt.Sprintf(
-		"gateway-api-openstack phase-0; identity-sha256=%x; role=%s",
-		digest,
-		encode(role),
-	)
+	return value.Phase0Description(role)
 }
 
-// MatchesDescription validates the immutable portion of a Floating IP description.
 func (id Identity) MatchesDescription(description, role string) bool {
-	return strings.HasPrefix(description, id.Description(role))
-}
-
-func tag(key, value string) string {
-	return identityPrefix + key + "=" + encode(value)
-}
-
-func encode(value string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(value))
+	value, err := cloudopenstack.NewIdentity(id.cloudIdentity())
+	return err == nil && strings.HasPrefix(description, value.Phase0Description(role))
 }
