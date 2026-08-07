@@ -60,7 +60,7 @@ by `checksums.txt`.
    reviewed commit contained in `main`.
 3. Confirm the exact target commit is green in CI and repeat the local
    validation from a clean checkout.
-4. Review README, getting-started guidance, ROADMAP, `SECURITY.md`, and provider
+4. Review README, getting-started guidance, ROADMAP, `SECURITY.md`, and Amphora
    compatibility documentation. State missing evidence explicitly.
 
 ## Create the draft release

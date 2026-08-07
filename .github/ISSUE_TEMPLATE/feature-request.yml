@@ -22,9 +22,10 @@ body:
     attributes:
       label: Related Gateway API resource or feature
   - type: input
-    id: provider
+    id: openstack-capability
     attributes:
-      label: Required Octavia provider capability
+      label: Required OpenStack capability
+      description: Name the Octavia API, microversion, Neutron, or Barbican capability involved.
   - type: textarea
     id: proposal
     attributes:
@@ -33,10 +34,15 @@ body:
     id: portability
     attributes:
       label: Portability and conformance considerations
+  - type: textarea
+    id: ownership-impact
+    attributes:
+      label: OpenStack ownership impact
+      description: Explain whether the proposal would read or mutate existing worker Neutron ports, security groups, OCCM resources, or other operator-owned resources.
   - type: checkboxes
     id: ownership
     attributes:
       label: Ownership
       options:
-        - label: The proposal does not require adopting or mutating OCCM-owned resources.
+        - label: I understand that adopting or mutating OCCM-owned resources is out of scope.
           required: true

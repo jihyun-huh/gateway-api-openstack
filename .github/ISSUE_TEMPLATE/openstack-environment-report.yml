@@ -17,6 +17,13 @@ body:
     validations:
       required: true
   - type: input
+    id: controller-version
+    attributes:
+      label: Controller release or commit
+      placeholder: v0.2.0 or commit SHA
+    validations:
+      required: true
+  - type: input
     id: kubernetes
     attributes:
       label: Kubernetes and Gateway API versions
@@ -25,21 +32,50 @@ body:
   - type: input
     id: openstack
     attributes:
-      label: OpenStack and Octavia versions
+      label: OpenStack and Octavia releases
     validations:
       required: true
   - type: input
-    id: provider
+    id: octavia-microversion
     attributes:
-      label: Octavia provider
+      label: Negotiated Octavia API microversion
+      description: Enter “unknown” if it could not be observed.
+    validations:
+      required: true
+  - type: input
+    id: amphora-topology
+    attributes:
+      label: Amphora topology
+      description: Confirm Amphora and report single or active-standby when known.
+      placeholder: amphora, active-standby
     validations:
       required: true
   - type: input
     id: networking
     attributes:
-      label: CNI and backend reachability model
+      label: CNI, kube-proxy, and cluster CIDR model
+      description: Describe Service and Pod CIDR reachability without publishing private ranges when they are sensitive.
     validations:
       required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Node address, member mode, and traffic policy
+      description: For example, InternalIP, NodePort, externalTrafficPolicy Cluster.
+    validations:
+      required: true
+  - type: textarea
+    id: topology
+    attributes:
+      label: VIP, member, and external network relationships
+      description: Describe reachability without including network IDs, private addresses, or customer data.
+    validations:
+      required: true
+  - type: textarea
+    id: services
+    attributes:
+      label: Optional services, permissions, and quotas
+      description: Note Floating IP, custom VIP security group, and Barbican availability plus relevant redacted roles or quotas.
   - type: textarea
     id: capabilities
     attributes:
