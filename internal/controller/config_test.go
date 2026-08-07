@@ -17,9 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -78,5 +83,28 @@ func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 				t.Fatal("Validate() unexpectedly succeeded")
 			}
 		})
+	}
+}
+
+func TestStatusForRouteBuildError(t *testing.T) {
+	notFound := fmt.Errorf("get backend Service: %w", apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, "backend"))
+	status := statusForRouteBuildError(notFound)
+	if status.resolved != metav1.ConditionFalse || status.resolvedReason != string(gatewayv1.RouteReasonBackendNotFound) {
+		t.Fatalf("not-found status = %#v", status)
+	}
+	pending := statusForRouteBuildError(errors.New("backend Service backend has no ready endpoints"))
+	if pending.accepted != metav1.ConditionTrue || pending.programmedReason != "Pending" {
+		t.Fatalf("pending status = %#v", pending)
+	}
+	rejected := rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "unsupported")
+	if rejected.resolved != metav1.ConditionUnknown || rejected.resolvedReason != string(gatewayv1.RouteReasonPending) {
+		t.Fatalf("rejected status = %#v", rejected)
+	}
+}
+
+func TestSupportedMatchDefaultsToRootPrefix(t *testing.T) {
+	_, pathType, value, err := supportedMatch(nil)
+	if err != nil || pathType != "PathPrefix" || value != "/" {
+		t.Fatalf("supportedMatch(nil) = %q %q, %v", pathType, value, err)
 	}
 }
