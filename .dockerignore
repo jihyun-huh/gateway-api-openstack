@@ -1,0 +1,12 @@
+.git
+.github
+bin
+dist
+_artifacts
+test-results
+phase-0-results
+clouds.yaml
+secure.yaml
+kubeconfig
+*.pem
+*.key

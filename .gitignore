@@ -30,3 +30,5 @@ kubeconfig
 probe-state.json
 probe-report.json
 phase-0-results/
+
+AGENTS.md
