@@ -1,6 +1,7 @@
 GO ?= go
 GOFMT ?= gofmt
 GOLANGCI_LINT ?= golangci-lint
+GORELEASER ?= goreleaser
 CONTAINER_TOOL ?= docker
 BINARY_DIR ?= bin
 PROBE_BINARY ?= $(BINARY_DIR)/octavia-capability-probe
@@ -68,6 +69,15 @@ verify: fmt-check vet test ## Run the checks required by CI.
 tidy: ## Update module metadata.
 	$(GO) mod tidy
 
+.PHONY: release-check
+release-check: ## Validate GoReleaser configuration and prerequisites.
+	$(GORELEASER) check
+	$(GORELEASER) healthcheck
+
+.PHONY: release-snapshot
+release-snapshot: ## Build release artifacts locally without publishing.
+	$(GORELEASER) release --snapshot --clean
+
 .PHONY: clean
 clean: ## Remove local build and probe output.
-	@rm -rf "$(BINARY_DIR)" "_artifacts"
+	@rm -rf "$(BINARY_DIR)" "_artifacts" "dist"
