@@ -18,65 +18,18 @@ package probe
 
 import (
 	"context"
-	"crypto/tls"
-	"fmt"
-	"net/http"
-	"os"
 
-	"github.com/gophercloud/gophercloud/v2"
-	"github.com/gophercloud/gophercloud/v2/openstack"
+	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
 
-type serviceClients struct {
-	loadBalancer *gophercloud.ServiceClient
-	network      *gophercloud.ServiceClient
-}
+// Phase 0 remains a standalone executable, but authentication and service
+// client construction are now production code shared with the controller.
+type serviceClients = cloudopenstack.ServiceClients
 
 func newServiceClients(ctx context.Context, region, microversion string, allowInsecure bool) (serviceClients, error) {
-	authOptions, err := openstack.AuthOptionsFromEnv()
-	if err != nil {
-		return serviceClients{}, fmt.Errorf("read OpenStack authentication environment: %w", err)
-	}
-
-	provider, err := openstack.NewClient(authOptions.IdentityEndpoint)
-	if err != nil {
-		return serviceClients{}, fmt.Errorf("create OpenStack provider client: %w", err)
-	}
-	if allowInsecure {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.TLSClientConfig = &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true, //nolint:gosec // Explicit Phase 0 test-cloud option.
-		}
-		provider.HTTPClient.Transport = transport
-	}
-	if err := openstack.Authenticate(ctx, provider, authOptions); err != nil {
-		return serviceClients{}, fmt.Errorf("authenticate to OpenStack: %w", err)
-	}
-
-	endpointOptions := gophercloud.EndpointOpts{Region: region}
-	loadBalancerClient, err := openstack.NewLoadBalancerV2(provider, endpointOptions)
-	if err != nil {
-		return serviceClients{}, fmt.Errorf("create Octavia client: %w", err)
-	}
-	loadBalancerClient.Microversion = microversion
-
-	networkClient, err := openstack.NewNetworkV2(provider, endpointOptions)
-	if err != nil {
-		return serviceClients{}, fmt.Errorf("create Neutron client: %w", err)
-	}
-
-	return serviceClients{
-		loadBalancer: loadBalancerClient,
-		network:      networkClient,
-	}, nil
-}
-
-func requireAuthenticationEnvironment() error {
-	for _, name := range []string{"OS_AUTH_URL"} {
-		if os.Getenv(name) == "" {
-			return fmt.Errorf("%s is not set yet, source an OpenStack RC file or export application credential variables", name)
-		}
-	}
-	return nil
+	return cloudopenstack.NewServiceClients(ctx, cloudopenstack.ClientConfig{
+		Region:        region,
+		Microversion:  microversion,
+		AllowInsecure: allowInsecure,
+	})
 }
