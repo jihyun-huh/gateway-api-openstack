@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openstack-gateway-system
+  labels:
+    app.kubernetes.io/name: openstack-gateway-controller
+    app.kubernetes.io/part-of: gateway-api-openstack
