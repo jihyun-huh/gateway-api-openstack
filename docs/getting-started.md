@@ -1,9 +1,10 @@
-# Getting started with the Phase 1 controller
+# Getting started with the current controller
 
-The controller is pre-alpha and Phase 1 is still in progress. The retained
-capability probe has exercised the required Octavia and Neutron primitives in
-one OpenStack environment. The complete Kubernetes controller path has not yet
-passed a published real-cloud end-to-end suite, and no release image is
+The controller is pre-alpha. The constrained Phase 1 implementation is
+complete and Phase 2 reliability work is active. The retained capability probe
+has exercised the required Octavia and Neutron primitives in one OpenStack
+environment, but the complete Kubernetes controller path has not yet passed a
+real-cloud end-to-end test with published evidence. No release image is
 currently provided.
 
 Use these manifests only in a disposable test project. Keep
@@ -13,8 +14,9 @@ controller creates separate resources only for its Gateway API objects.
 ## Prerequisites
 
 - A Kubernetes cluster with the Gateway API Standard Channel v1.6.1 CRDs.
-- An OpenStack project with Octavia and Neutron access. Phase 1 accepts only
-  the Amphora provider.
+- An OpenStack project with Octavia and Neutron access. The controller accepts
+  only Amphora; release support still requires matching compatibility
+  evidence for the environment.
 - A least-privilege Keystone application credential stored in a named
   `clouds.yaml` entry.
 - A VIP subnet and a member subnet from which Amphora can reach the selected
@@ -30,6 +32,12 @@ controller creates separate resources only for its Gateway API objects.
 The member subnet ID is always required. `InternalIP` is the default Node
 address type; select `ExternalIP` only when those addresses belong to the
 configured member network and are reachable from Amphora.
+
+The current controller does not create networks, subnets, routers, or backend
+security groups and does not attach security groups to worker ports. Operators
+must establish that connectivity before creating a Gateway. Later automation
+will retain explicit ownership boundaries and will not adopt the cluster's
+existing network topology.
 
 Install the pinned Standard Channel CRDs if the cluster does not already have
 them:
@@ -115,16 +123,16 @@ The Deployment starts two replicas with leader election. It exposes health and
 readiness probes on port 8081 and controller-runtime metrics inside each Pod on
 port 8080. Metrics are not exposed through a Service by the base manifests.
 
-## Configuration reference
+## Current configuration reference
 
 The non-secret ConfigMap uses the environment variables accepted by the
 controller binary.
 
-| Setting | Environment variable | Phase 1 behavior |
+| Setting | Environment variable | Current behavior |
 | --- | --- | --- |
 | Controller identity | `GATEWAY_OPENSTACK_CONTROLLER_NAME` | Required; must exactly match GatewayClass |
 | Cluster identity | `GATEWAY_OPENSTACK_CLUSTER_ID` | Required and stable |
-| Octavia provider | `GATEWAY_OPENSTACK_OCTAVIA_PROVIDER` | Must be `amphora` |
+| Octavia provider guard | `GATEWAY_OPENSTACK_OCTAVIA_PROVIDER` | Must remain `amphora`; this is not a provider-selection API |
 | VIP subnet | `GATEWAY_OPENSTACK_VIP_SUBNET_ID` | Required |
 | External network | `GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID` | Optional Floating IP allocation |
 | Member subnet | `GATEWAY_OPENSTACK_MEMBER_SUBNET_ID` | Required; contains selected Node addresses |
@@ -166,7 +174,7 @@ kubectl -n gateway-api-openstack-demo get gateway edge \
 Send an HTTP request to that address from a network that can reach it. A VIP
 without a Floating IP may not be reachable from the public Internet.
 
-## Phase 1 limitations
+## Current implementation limitations
 
 - HTTP is the only listener protocol; TLS is not supported.
 - Each Gateway has exactly one listener and one selected same-namespace
