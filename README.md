@@ -162,6 +162,11 @@ are welcome. Start with CONTRIBUTING.md(will be open soon) and the issues marked
 Until the first architecture decision records are accepted, substantial API or
 controller changes should begin as a design issue.
 
+Maintainers preparing a release must follow the
+[draft release and artifact verification process](docs/releasing.md). Release
+packaging does not replace the real-cloud and conformance evidence required by
+the roadmap.
+
 ## Security
 
 Please do not report vulnerabilities in a public issue. Follow

@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "${tag}" =~ ${semver} ]]; then
+            echo "::error::Release tag must be valid SemVer with a v prefix"
+            exit 1
+          fi
+          version_without_build="${tag%%+*}"
+          if [[ "${version_without_build}" == *-* ]]; then
+            prerelease="${version_without_build#*-}"
+            IFS='.' read -r -a prerelease_identifiers <<< "${prerelease}"
+            for identifier in "${prerelease_identifiers[@]}"; do
+              if [[ "${identifier}" =~ ^0[0-9]+$ ]]; then
+                echo "::error::Numeric prerelease identifiers must not contain leading zeroes"
+                exit 1
+              fi
+            done
+          fi
+          if [[ "$(git cat-file -t "${tag}")" != "tag" ]]; then
+            echo "::error::Release tag must be annotated or signed"
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "${tag}")"
+          if ! git merge-base --is-ancestor "${tag_commit}" origin/main; then
+            echo "::error::Release tag commit must be contained in origin/main"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Verify source and tests
+        run: make verify
+
+      - name: Create draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
