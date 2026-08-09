@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect controller behavior.
+description: Report a controller problem that you can reproduce.
 title: "[Bug]: "
 labels:
   - kind/bug
@@ -7,8 +7,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Do not include credentials or private tenant data. Report security
-        vulnerabilities using the private process in SECURITY.md.
+        Do not include credentials or private OpenStack project data. Report
+        security vulnerabilities using the private process in SECURITY.md.
   - type: input
     id: controller-version
     attributes:
@@ -33,8 +33,10 @@ body:
     id: amphora-topology
     attributes:
       label: Amphora topology
-      description: Confirm the provider is Amphora and report single or active-standby when known.
-      placeholder: amphora, active-standby
+      description: >-
+        Confirm that the provider is Amphora and state whether its topology is
+        SINGLE or ACTIVE_STANDBY.
+      placeholder: amphora, ACTIVE_STANDBY
     validations:
       required: true
   - type: dropdown

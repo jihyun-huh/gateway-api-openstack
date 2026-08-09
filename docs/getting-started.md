@@ -1,24 +1,23 @@
 # Getting started with the current controller
 
-The controller is pre-alpha. The constrained Phase 1 implementation is
-complete and Phase 2 reliability work is active. The retained capability probe
-has exercised the required Octavia and Neutron primitives in one OpenStack
-environment, but the complete Kubernetes controller path has not yet passed a
-real-cloud end-to-end test with published evidence. No release image is
-currently provided.
+The controller is pre-alpha. Phase 1 is implemented, and Phase 2 focuses on
+reliability. The Phase 0 probe tested the required Octavia and Neutron
+operations in one environment. The project has not yet published results from
+end-to-end controller testing in an OpenStack environment. No release image is
+available.
 
 Use these manifests only in a disposable test project. Keep
-cloud-provider-openstack responsible for `Service type=LoadBalancer`; this
+cloud-provider-openstack responsible for Services of type `LoadBalancer`. This
 controller creates separate resources only for its Gateway API objects.
 
 ## Prerequisites
 
 - A Kubernetes cluster with the Gateway API Standard Channel v1.6.1 CRDs.
 - An OpenStack project with Octavia and Neutron access. The controller accepts
-  only Amphora; release support still requires matching compatibility
-  evidence for the environment.
-- A least-privilege Keystone application credential stored in a named
-  `clouds.yaml` entry.
+  only Amphora. Support claims are limited to environment profiles with
+  published compatibility evidence.
+- A Keystone application credential with only the permissions that the
+  controller needs, stored in a named `clouds.yaml` entry.
 - A VIP subnet and a member subnet from which Amphora can reach the selected
   Kubernetes Node addresses and allocated NodePorts.
 - Security groups and routing that allow Amphora health checks and HTTP
@@ -30,14 +29,15 @@ controller creates separate resources only for its Gateway API objects.
   The repository does not currently publish a supported image.
 
 The member subnet ID is always required. `InternalIP` is the default Node
-address type; select `ExternalIP` only when those addresses belong to the
+address type. Select `ExternalIP` only when those addresses belong to the
 configured member network and are reachable from Amphora.
 
 The current controller does not create networks, subnets, routers, or backend
 security groups and does not attach security groups to worker ports. Operators
-must establish that connectivity before creating a Gateway. Later automation
-will retain explicit ownership boundaries and will not adopt the cluster's
-existing network topology.
+must establish that connectivity before creating a Gateway. Planned automation
+will not take ownership of existing networks, subnets, routers, or worker
+ports. Any future change to a worker port's security groups will require an
+explicit opt-in and the ownership safeguards described in the roadmap.
 
 Install the pinned Standard Channel CRDs if the cluster does not already have
 them:
@@ -48,7 +48,7 @@ kubectl apply -f \
 ```
 
 The controller also performs a startup discovery check and exits with a clear
-error when `GatewayClass`, `Gateway`, or `HTTPRoute` is unavailable.
+error when GatewayClass, Gateway, or HTTPRoute is unavailable.
 
 ## Prepare OpenStack credentials
 
@@ -84,22 +84,22 @@ ConfigMaps, Gateway API status, or examples.
 
 Edit `config/manager/controller-config.yaml` before applying it:
 
-- replace the example controller name with a domain-prefixed name controlled
-  by the operator;
-- set a stable, cluster-unique ID and never change it while managed resources
-  exist;
-- set the VIP and member subnet IDs;
-- optionally set the external network ID;
-- set `OS_CLOUD` to the entry in the mounted `clouds.yaml`; and
-- set `OS_REGION_NAME` only when it should override `region_name` in that file.
+- Replace the example controller name with one under a domain controlled by the
+  operator.
+- Set the cluster ID to a value that is unique to this cluster, and do not
+  change it while managed resources exist.
+- Set the VIP and member subnet IDs.
+- Set the external network ID if the controller should allocate Floating IPs.
+- Set `OS_CLOUD` to the entry in the mounted `clouds.yaml`.
+- Set `OS_REGION_NAME` only when it should override `region_name` in that file.
 
 The same controller name must be used in every managed
 `GatewayClass.spec.controllerName`, including `examples/basic.yaml`.
 
 Build and push an image from the exact source revision you are deploying, then
-edit the image override in `config/default/kustomization.yaml`. The checked-in
-`example.invalid` image is intentionally unusable so an unpublished image is
-never mistaken for a release artifact.
+edit the image override in `config/default/kustomization.yaml`. The image
+reference in the repository uses `example.invalid` and is intentionally
+unusable, so it cannot be mistaken for a published release.
 
 ```sh
 make container-build \
@@ -125,20 +125,20 @@ port 8080. Metrics are not exposed through a Service by the base manifests.
 
 ## Current configuration reference
 
-The non-secret ConfigMap uses the environment variables accepted by the
-controller binary.
+The ConfigMap contains no secrets. It uses the environment variables accepted
+by the controller binary.
 
 | Setting | Environment variable | Current behavior |
 | --- | --- | --- |
-| Controller identity | `GATEWAY_OPENSTACK_CONTROLLER_NAME` | Required; must exactly match GatewayClass |
+| Controller identity | `GATEWAY_OPENSTACK_CONTROLLER_NAME` | Required. Must exactly match GatewayClass |
 | Cluster identity | `GATEWAY_OPENSTACK_CLUSTER_ID` | Required and stable |
-| Octavia provider guard | `GATEWAY_OPENSTACK_OCTAVIA_PROVIDER` | Must remain `amphora`; this is not a provider-selection API |
+| Octavia provider | `GATEWAY_OPENSTACK_OCTAVIA_PROVIDER` | Required and fixed to `amphora`. Other providers are not supported |
 | VIP subnet | `GATEWAY_OPENSTACK_VIP_SUBNET_ID` | Required |
 | External network | `GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID` | Optional Floating IP allocation |
-| Member subnet | `GATEWAY_OPENSTACK_MEMBER_SUBNET_ID` | Required; contains selected Node addresses |
+| Member subnet | `GATEWAY_OPENSTACK_MEMBER_SUBNET_ID` | Required. Contains selected Node addresses |
 | Member mode | `GATEWAY_OPENSTACK_MEMBER_MODE` | Must be `NodePort` |
 | Node address | `GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE` | `InternalIP` or `ExternalIP` |
-| Monitor path | `GATEWAY_OPENSTACK_HEALTH_PATH` | Absolute HTTP path; defaults to `/` |
+| Monitor path | `GATEWAY_OPENSTACK_HEALTH_PATH` | Absolute HTTP path. Defaults to `/` |
 | Cloud name | `OS_CLOUD` | Named entry in `clouds.yaml` |
 | Cloud file | `OS_CLIENT_CONFIG_FILE` | Mounted `/etc/openstack/clouds.yaml` |
 | Region | `OS_REGION_NAME` | Optional override |
@@ -146,8 +146,8 @@ controller binary.
 The base Deployment also sets these binary flags: leader election enabled,
 metrics on `:8080`, probes on `:8081`, and Octavia microversion `2.5`. The
 binary additionally supports `--openstack-operation-timeout` and
-`--openstack-poll-interval`; the manifests retain their defaults of 10 minutes
-and 2 seconds.
+`--openstack-poll-interval`. The manifests do not override these two flags, so
+the binary uses defaults of 10 minutes and 2 seconds.
 
 ## Apply the basic example
 
@@ -162,9 +162,11 @@ kubectl -n gateway-api-openstack-demo get httproute basic -o yaml
 ```
 
 The example intentionally uses one Gateway, one HTTP listener, one HTTPRoute,
-one rule, one path-prefix match, and one NodePort Service backend. Wait for the
-Gateway and HTTPRoute `Accepted` and `Programmed` conditions to become `True`.
-The address is published at `Gateway.status.addresses[0].value`.
+one rule, one PathPrefix match, and one NodePort Service backend. Wait until the
+Gateway's `Accepted` and `Programmed` conditions are `True`. In the HTTPRoute
+parent status, wait for `Accepted`, `ResolvedRefs`, and the
+`<controller-domain>/Programmed` condition defined by this controller to become
+`True`. The address is published at `Gateway.status.addresses[0].value`.
 
 ```sh
 kubectl -n gateway-api-openstack-demo get gateway edge \
@@ -176,11 +178,11 @@ without a Floating IP may not be reachable from the public Internet.
 
 ## Current implementation limitations
 
-- HTTP is the only listener protocol; TLS is not supported.
-- Each Gateway has exactly one listener and one selected same-namespace
-  HTTPRoute.
+- HTTP is the only listener protocol. TLS is not supported.
+- Each Gateway has exactly one listener and one selected HTTPRoute in the same
+  namespace.
 - Each HTTPRoute has one rule, at most one exact hostname, at most one Exact or
-  PathPrefix match, and one same-namespace Service backend.
+  PathPrefix match, and one Service backend in the same namespace.
 - Backend Services must be `type: NodePort`. Both `externalTrafficPolicy:
   Cluster` and `Local` are handled, but Local requires ready EndpointSlices to
   identify their Nodes.
@@ -193,8 +195,8 @@ without a Floating IP may not be reachable from the public Internet.
 
 Keep the controller, its application credential, and OpenStack access running
 until every managed HTTPRoute and Gateway has finished finalization. Removing
-the Deployment or Secret first can strand OpenStack resources behind blocked
-Kubernetes finalizers.
+the Deployment or Secret first can leave OpenStack resources behind and leave
+Kubernetes objects stuck in deletion.
 
 For the basic example, delete in this order:
 
@@ -208,11 +210,12 @@ kubectl delete -k config/default
 
 Each of the first three commands waits for deletion by default. If one remains
 blocked, inspect its conditions, controller logs, and the matching OpenStack
-resources. Do not force-remove controller finalizers: that bypasses ownership
-checks and cleanup.
+resources. Do not remove controller finalizers manually because doing so
+bypasses ownership checks and cleanup.
 
-Before uninstalling a shared controller, repeat the Route, Gateway, and
+Before uninstalling a shared controller, repeat the HTTPRoute, Gateway, and
 GatewayClass deletion sequence for every class using its exact controller
 name. The final `kubectl delete -k` removes the dedicated
 `openstack-gateway-system` namespace and its credential Secret. It does not and
-should not remove the cluster-wide Gateway API CRDs.
+remove the cluster-scoped Gateway API CRDs, which may be shared by other
+controllers.

@@ -1,97 +1,94 @@
 # Gateway API for OpenStack
 
 > [!IMPORTANT]
-> This project is in pre-alpha. The constrained Phase 1 implementation is
-> complete and Phase 2 reliability work is active, but no production release
-> is available yet.
->
-> The repository contains an early controller and deployment manifests, but
-> the complete controller path has not yet passed a real-cloud end-to-end test
-> with published evidence. The Phase 0 capability probe is not controller E2E
-> proof.
->
-> Do not use this project in production.
+> This project is pre-alpha and is not ready for production. Phase 1 is
+> implemented, and Phase 2 focuses on reliability. The project has not yet
+> published results from end-to-end controller testing in an OpenStack
+> environment. The Phase 0 capability probe does not provide that coverage.
 
 gateway-api-openstack is an experimental Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/)
-implementation that currently provides a constrained HTTP slice and targets a
-production-grade HTTP and terminated HTTPS data path backed exclusively by
-Octavia's Amphora provider.
+implementation that currently supports a limited set of HTTP features. Its goal
+is reliable HTTP and terminated HTTPS support on Octavia's Amphora provider.
 
-The project is an Octavia-native, Amphora-only controller. It reconciles
-`GatewayClass`, `Gateway`, and `HTTPRoute` resources into Octavia load
+The controller uses Octavia directly and supports only the Amphora provider. It
+reconciles GatewayClass, Gateway, and HTTPRoute resources into Octavia load
 balancers, listeners, pools, members, health monitors, and related Neutron
 resources. It does this without taking ownership of
-`Service` resources or load balancers managed by
+Service resources or load balancers managed by
 [cloud-provider-openstack](https://github.com/kubernetes/cloud-provider-openstack).
 
 ## Why this project?
 
-OpenStack clusters have two established integration paths and a third use case
-this project addresses:
+OpenStack clusters already have established integrations for Kubernetes
+Services and proxy controllers that run inside the cluster. This controller
+covers a different use case:
 
-- cloud-provider-openstack provisions Octavia load balancers for
-  `Service type=LoadBalancer`
-- proxy controllers such as Traefik implement Gateway API inside the cluster
-- this project provides a direct mapping from Gateway resources to Octavia
-  Amphora's cloud-native HTTP, HTTPS, and L7 load-balancing capabilities.
+- cloud-provider-openstack provisions Octavia load balancers for Services of
+  type `LoadBalancer`.
+- Proxy controllers such as Traefik implement Gateway API inside the cluster.
+- gateway-api-openstack creates Octavia resources directly for the HTTP features
+  it currently supports. Terminated HTTPS and broader L7 support are planned.
 
-This project aims to close the third gap while retaining a clean ownership
-boundary with existing cloud-provider components.
+The controller does not reuse or modify load balancers created by
+cloud-provider-openstack.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    S["Service type=LoadBalancer"] --> OCCM["cloud-provider-openstack"]
-    OCCM --> SLB["OCCM-owned Octavia LB"]
+    S["Service of type LoadBalancer"] --> OCCM["cloud-provider-openstack"]
+    OCCM --> SLB["Octavia LB owned by OCCM"]
 
     G["Gateway API resources"] --> CTRL["openstack-gateway-controller"]
-    CTRL --> OLB["Gateway-owned Amphora LB"]
+    CTRL --> OLB["Amphora LB owned by the Gateway"]
     CTRL --> K8S["Service, EndpointSlice, and Node reads"]
 ```
 
 The controller:
 
-- provisions new resources only for Gateway API objects assigned to its exact
-  controller name; previously bound objects remain its cleanup responsibility
-- reads backend `Service`, `EndpointSlice`, and `Node` resources for the
-  current NodePort path
-- loads credentials from a projected Kubernetes Secret
-- **creates only Gateway-owned OpenStack resources**
-- never adopts, mutates, or deletes an OCCM-owned load balancer
-- records the complete immutable project, cluster, controller, Gateway UID,
-  and resource-role identity where the OpenStack API supports metadata or
-  tags, and does not manage a resource type without identity-safe recovery.
+- Provisions new resources only for Gateway API objects assigned to its exact
+  controller name. Previously bound objects remain its cleanup responsibility.
+- Reads backend Service, EndpointSlice, and Node resources for the
+  current NodePort path.
+- Loads credentials from a projected Kubernetes Secret.
+- Creates OpenStack resources only for Gateways managed by this controller.
+- Never adopts, mutates, or deletes a load balancer owned by OCCM.
+- Records the project, cluster, controller, Gateway UID, and resource role for
+  every resource it creates. Resources created for an HTTPRoute also record the
+  route identity. The controller manages a resource type only when it can store
+  enough identity for safe recovery.
 
 See [the architecture document](docs/design/architecture.md) for the proposed
 resource mapping and ownership contract.
 
 ## Product direction
 
-The target is a production-grade controller for the Amphora HTTP/HTTPS path,
-not a framework for every Octavia provider. Within that boundary it should
-make common Gateway API use straightforward: multiple Gateways, listeners,
-routes, namespaces, backends, certificates, Floating IPs, and safe network and
-security configuration across explicitly tested OpenStack topologies.
+The goal is to make common HTTP and terminated HTTPS Gateway setups reliable
+on Amphora. Planned work covers multiple Gateways, listeners, routes,
+namespaces, backends, certificates, and Floating IPs. It also includes network
+selection and security group automation in tested OpenStack topologies.
+Supporting every Octavia provider is not a goal.
 
 One controller deployment uses one OpenStack cloud, region, project, and
-credential scope. One `Gateway` owns one Octavia load balancer. NodePort is the
-default backend path; routable Pod IP members may be added only as a tested
-opt-in. Features that the Octavia API cannot express with Gateway API semantics
-are rejected clearly rather than approximated.
+credential scope. One Gateway owns one Octavia load balancer. The controller
+uses NodePort backends by default. Support for routable Pod IP members may be
+added later as an opt-in after testing in documented network topologies.
+Features that the Octavia API cannot express with Gateway API semantics are
+rejected clearly rather than approximated.
 
 Traefik, Envoy, and other proxy controllers remain independent projects and
 deployment paths. This controller does not install or manage them.
 
 ## Current implementation
 
-The current native vertical slice includes:
+The controller currently supports:
 
-- `GatewayClass`, `Gateway`, and `HTTPRoute`
+- GatewayClass, Gateway, and HTTPRoute
 - HTTP listeners
-- one exact hostname and Exact or element-aware PathPrefix matching
-- one selected same-namespace HTTPRoute per Gateway, with one rule and one
-  same-namespace NodePort Service backend
+- one exact hostname, with either an Exact path match or a PathPrefix match on
+  complete path elements
+- one selected HTTPRoute in the same namespace as the Gateway, with one rule
+  and one NodePort Service backend in the same namespace as the route
 - NodePort members discovered from ready Nodes and EndpointSlices
 - one Octavia load balancer per Gateway
 - Octavia listeners, L7 policies and rules, pools, members, and health monitors
@@ -99,7 +96,7 @@ The current native vertical slice includes:
 - standard Gateway API status conditions
 - the Amphora provider in Octavia as the only accepted provider
 
-The first release will not claim full Gateway API conformance. Amphora
+The first release will not claim Gateway API conformance. Amphora
 capabilities still vary by Octavia version, enabled services, API
 microversions, project permissions, and network topology. Some Gateway API
 HTTP features cannot be represented by Octavia L7 policies. Unsupported
@@ -113,7 +110,7 @@ features must be rejected explicitly in resource status rather than ignored.
 - Supporting OVN or another Octavia provider.
 - Creating or owning tenant networks, subnets, routers, and routes.
 - Reconciling Ingress, non-HTTP route kinds, or a proxy data plane.
-- Hiding Amphora environment and Octavia-version capability differences.
+- Hiding differences between Amphora environments or Octavia versions.
 - Claiming that success in one OpenStack cloud proves compatibility with every
   OpenStack deployment.
 
@@ -121,30 +118,31 @@ features must be rejected explicitly in resource status rather than ignored.
 
 Current milestone: **Phase 2 — safe and efficient reconciliation**.
 
-The Phase 0 capability probe has exercised the required Octavia and Neutron
-resource primitives in one environment. That result is environment-specific
-and does not establish that the Kubernetes controller is end-to-end ready or
-that every OpenStack cloud is compatible.
+The Phase 0 probe tested the required Octavia and Neutron operations in one
+environment. That result applies only to that environment. It does not show
+that the controller works end to end or that every OpenStack cloud is
+compatible.
 
-The Phase 1 source baseline is complete. Phase 2 work is focused on:
+The Phase 1 code is complete, although verification in an OpenStack environment
+is still pending. Phase 2 focuses on these tasks:
 
-1. making the Gateway the single coordinated OpenStack graph and eliminating
-   overlapping mutations.
-2. replacing long Octavia waits and broad Kubernetes list scans with bounded,
+1. Coordinate all mutations to a Gateway's OpenStack resource graph in one
+   place.
+2. Replace long Octavia waits and broad Kubernetes list scans with bounded,
    event-driven reconciliation.
-3. proving restart, partial-create, no-op, drift, and identity-safe deletion
-   behavior.
-4. publishing the first Amphora-backed NodePort controller E2E result and a
-   Gateway API conformance gap report.
+3. Test restart, recovery after partial creation, no-op reconciliation, drift,
+   and deletion with full ownership checks.
+4. Publish the first end-to-end NodePort test result from an Amphora environment
+   and a report of the remaining Gateway API conformance gaps.
 
 See [ROADMAP.md](ROADMAP.md) for the complete phased plan.
 
 ## Getting started
 
 The repository includes a minimal Kustomize deployment and a constrained
-NodePort example for development environments. It requires an operator-built
-controller image and a Kubernetes Secret containing `clouds.yaml`; no supported
-image is published yet.
+NodePort example for development environments. It requires a controller image
+built by the operator and a Kubernetes Secret containing `clouds.yaml`. No
+supported image is published yet.
 
 See [Getting started with the current controller](docs/getting-started.md) for
 prerequisites, configuration, installation, verification, limitations, and the
@@ -155,35 +153,33 @@ safe removal order.
 This project is currently an independently maintained, experimental
 open source project.
 
-Its long-term goals are to:
+The project has these long-term goals:
 
-- publish evidence-backed Gateway API conformance for the Amphora HTTP/HTTPS
-  surface it actually supports;
-- join the Gateway API implementation list after submitting the required
-  version-specific conformance report;
-- build a diverse group of users, contributors, and maintainers; and
-- explore an appropriate long-term community home if the project demonstrates
-  sustained adoption and contributor interest.
+- Publish conformance results for a Gateway API version only after every
+  claimed feature passes the pinned suite.
+- Apply to the Gateway API implementation list only after submitting the
+  required conformance report for the supported version.
+- Build a diverse group of users, contributors, and maintainers.
+- Consider a long-term community home only after the project has sustained
+  adoption and contributor interest.
 
-These are project goals, not commitments or claims of upstream acceptance.
-
-This project is not currently affiliated with or endorsed by the Kubernetes
-project, SIG Network, the Gateway API project, the OpenInfra Foundation,
-or the cloud-provider-openstack project.
+These are future goals. The project is independently maintained and is not
+currently affiliated with or endorsed by the Kubernetes project, SIG Network,
+the Gateway API project, the OpenInfra Foundation, or the
+cloud-provider-openstack project.
 
 ## Contributing
 
 Design feedback, Amphora environment reports, and implementation contributions
-are welcome. A full contribution guide is part of the Phase 2 project-baseline
-work. Until it is published, start with a focused issue and the work marked
-`help wanted`.
+are welcome. Writing a full contribution guide is a Phase 2 task. Until then,
+open a focused issue or look for issues marked `help wanted`.
 
 Until the first architecture decision records are accepted, substantial API or
 controller changes should begin as a design issue.
 
 Maintainers preparing a release must follow the
 [draft release and artifact verification process](docs/releasing.md). Release
-packaging does not replace the real-cloud and conformance evidence required by
+packaging does not replace the OpenStack and conformance evidence required by
 the roadmap.
 
 ## Security

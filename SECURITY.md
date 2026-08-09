@@ -18,7 +18,7 @@ Include:
 - affected version or commit
 - impact and threat model
 - reproduction details
-- whether credentials, tenant isolation, resource deletion, or traffic
+- whether credentials, OpenStack project isolation, resource deletion, or traffic
   exposure is involved
 - any suggested mitigation
 - your preferred contact details and disclosure timeline
@@ -28,19 +28,19 @@ configuration and a minimal reproduction.
 
 ## Response
 
-Maintainers will acknowledge a valid private report as soon as practical,
-investigate affected versions, and coordinate a fix and disclosure. Formal
-response-time commitments will be published before a production-ready release.
+Maintainers will acknowledge private reports as soon as practical, assess the
+affected versions, and coordinate a fix and disclosure. The project will
+publish formal response times before its first production release.
 
 ## Scope
 
-Security-sensitive areas include:
+Security concerns include:
 
 - Keystone credentials and Kubernetes Secrets
 - cross-namespace references
 - OpenStack project and resource isolation
 - resource identity, adoption, and deletion
-- security-group management
+- OpenStack security group management
 - TLS material and Barbican
 - controller RBAC
-- release images and supply chain
+- release images and the software supply chain
