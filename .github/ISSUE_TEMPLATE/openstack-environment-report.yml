@@ -1,5 +1,5 @@
 name: OpenStack environment report
-description: Share compatibility evidence from an OpenStack environment.
+description: Share test results from an OpenStack Amphora environment.
 title: "[Environment]: "
 labels:
   - kind/provider-report
@@ -8,7 +8,7 @@ body:
     attributes:
       value: |
         Share only information you are authorized to publish. Never include
-        credentials, tenant IDs, public IPs, or customer names.
+        credentials, OpenStack project IDs, public IPs, or customer names.
   - type: input
     id: environment
     attributes:
@@ -39,43 +39,52 @@ body:
     id: octavia-microversion
     attributes:
       label: Negotiated Octavia API microversion
-      description: Enter “unknown” if it could not be observed.
+      description: Enter “unknown” if you could not determine it.
     validations:
       required: true
   - type: input
     id: amphora-topology
     attributes:
       label: Amphora topology
-      description: Confirm Amphora and report single or active-standby when known.
-      placeholder: amphora, active-standby
+      description: >-
+        Confirm that the provider is Amphora and state whether its topology is
+        SINGLE or ACTIVE_STANDBY.
+      placeholder: amphora, ACTIVE_STANDBY
     validations:
       required: true
   - type: input
     id: networking
     attributes:
-      label: CNI, kube-proxy, and cluster CIDR model
-      description: Describe Service and Pod CIDR reachability without publishing private ranges when they are sensitive.
+      label: CNI, kube-proxy mode, and cluster CIDRs
+      description: >-
+        Describe Service and Pod CIDR reachability without publishing private
+        ranges when they are sensitive.
     validations:
       required: true
   - type: input
     id: backend
     attributes:
       label: Node address, member mode, and traffic policy
-      description: For example, InternalIP, NodePort, externalTrafficPolicy Cluster.
+      description: >-
+        For example: InternalIP, NodePort, and externalTrafficPolicy: Cluster.
     validations:
       required: true
   - type: textarea
     id: topology
     attributes:
       label: VIP, member, and external network relationships
-      description: Describe reachability without including network IDs, private addresses, or customer data.
+      description: >-
+        Describe reachability without including network IDs, private addresses,
+        or customer data.
     validations:
       required: true
   - type: textarea
     id: services
     attributes:
       label: Optional services, permissions, and quotas
-      description: Note Floating IP, custom VIP security group, and Barbican availability plus relevant redacted roles or quotas.
+      description: >-
+        Note whether Floating IPs, custom VIP security groups, and Barbican are
+        available. Include relevant roles or quotas without private identifiers.
   - type: textarea
     id: capabilities
     attributes:
@@ -85,7 +94,7 @@ body:
   - type: textarea
     id: results
     attributes:
-      label: Results and reproducible evidence
+      label: Test results and reproduction details
     validations:
       required: true
   - type: checkboxes

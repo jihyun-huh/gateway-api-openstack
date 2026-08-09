@@ -5,4 +5,6 @@ contact_links:
     about: Check the upstream Gateway API documentation and community resources.
   - name: cloud-provider-openstack issues
     url: https://github.com/kubernetes/cloud-provider-openstack/issues
-    about: Use this for OCCM, Cinder CSI, and Manila CSI behavior not owned by this project.
+    about: >-
+      Report OCCM, Cinder CSI, and Manila CSI behavior to
+      cloud-provider-openstack.

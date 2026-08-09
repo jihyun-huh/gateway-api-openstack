@@ -1,54 +1,55 @@
 # Amphora compatibility evidence
 
-The controller accepts only Amphora under the gateway-api-openstack product
-contract. OVN and vendor providers are out of scope rather than untested
-alternatives. Release support remains specific to the evidence below.
+The controller accepts only Amphora. OVN and vendor providers are out of scope.
+This page records the Amphora environments that have actually been tested. It
+does not claim support beyond that evidence.
 
-No controller release has a supported environment profile yet. The retained
-Phase 0 probe exercised individual Octavia and Neutron operations in one
-Amphora environment, but its exact versions and topology have not been
-published. It does not demonstrate controller traffic, recovery, deletion, or
-Gateway API conformance.
+No controller release has a supported environment profile yet. The Phase 0
+probe tested individual Octavia and Neutron operations in one Amphora
+environment, but its exact versions and topology have not been published.
+It did not test controller traffic, recovery, deletion, or Gateway API
+conformance.
 
 ## Evidence matrix
 
 | Capability | Current evidence | Evidence required for a support claim | Known constraints |
 | --- | --- | --- | --- |
-| Load balancer and HTTP listener lifecycle | Phase 0 resource probe passed; reproducible report pending | Controller create, converged no-op, restart, drift, and identity-safe deletion E2E | One controller-owned Amphora load balancer per Gateway |
-| L7 policies and rules | Phase 0 resource probe passed; constrained controller unit tests exist | Real traffic, precedence, partial-create recovery, and pinned conformance results | Only Gateway API semantics that Octavia represents exactly |
-| NodePort members and health monitors | Resource creation passed; controller traffic E2E pending | Traffic for `externalTrafficPolicy: Cluster` and `Local`, endpoint churn, Node lifecycle, and leak checks | Worker addresses and NodePorts must be reachable from Amphora |
-| Floating IP allocation | Phase 0 probe and identity-safe adapter tests passed | Floating IP and VIP-only path E2E, quota failure, detach recovery, and cleanup | Only controller-created Floating IPs; existing addresses are not adopted |
-| Reconciliation failure recovery | Unit coverage exists for selected ownership and deletion cases | Restart, leader change, `PENDING_*`, timeout, quota, rate limit, external deletion, and partial graph fault injection | Ownership conflict stops mutation |
-| Network and backend security automation | Not implemented | Deterministic resolution plus `Referenced`, `Unmanaged`, and any approved `Managed` mode E2E | Networks, subnets, routers, foreign security groups, and worker ports are not controller-owned |
-| Terminated HTTPS and Barbican | Not implemented | Secret authorization, certificate create/rotation/restart/delete, SNI, and orphan checks | Requires Barbican and identity-safe secret/container lifecycle |
-| Pod IP members | Not implemented | CNI-specific routability, EndpointSlice lifecycle, drain, security, and source-IP evidence | Experimental opt-in only; NodePort remains the compatibility path |
-| Gateway API conformance | No report submitted | Unmodified report for the pinned Gateway API version with every claimed feature passing | Only partial conformance can be reported when Amphora cannot represent Core semantics |
+| Load balancer and HTTP listener lifecycle | Phase 0 resource probe passed. Reproducible report pending | Initial creation, converged no-op, restart, drift, and E2E deletion with full ownership checks | One Amphora load balancer owned by each Gateway |
+| L7 policies and rules | Phase 0 resource probe passed. Constrained controller unit tests exist | Real traffic, precedence, recovery after partial creation, and pinned conformance results | Only Gateway API semantics that Octavia represents exactly |
+| NodePort members and health monitors | Resource creation passed. Controller traffic E2E pending | Traffic for `externalTrafficPolicy: Cluster` and `Local`, endpoint churn, Node lifecycle, and leak checks | Worker addresses and NodePorts must be reachable from Amphora |
+| Floating IP allocation | Phase 0 probe and adapter ownership tests passed | E2E tests with and without a Floating IP, quota failure, detach recovery, and cleanup | Only Floating IPs created by the controller. Existing addresses are not adopted |
+| Reconciliation failure recovery | Unit coverage exists for selected ownership and deletion cases | Restart, leader change, `PENDING_*`, timeout, quota, rate limit, external deletion, and fault injection after partial creation | Ownership conflict stops mutation |
+| Network and backend security automation | Not implemented | A documented network selection procedure and repeatable end-to-end tests for `Referenced`, `Unmanaged`, and any approved `Managed` mode | The controller does not own networks, subnets, routers, foreign security groups, or worker ports |
+| Terminated HTTPS and Barbican | Not implemented | Tests for authorized Secret references, certificate creation and rotation, restart recovery, deletion, SNI, and orphan cleanup | Requires Barbican and a certificate lifecycle that verifies ownership before mutation or deletion |
+| Pod IP members | Not implemented | Tests that cover CNI routability, EndpointSlice lifecycle, draining, security, and source IP behavior | If added, this mode will remain experimental and require explicit opt-in. NodePort remains the default mode with the broadest compatibility |
+| Gateway API conformance | No report submitted | Unmodified report for the pinned Gateway API version with every claimed feature passing | Do not claim a conformance profile unless all of its Core features pass |
 
 ## Environment profile
 
-Every published compatibility result must include:
+Every compatibility report must record:
 
-- controller release or commit and Gateway API version;
-- Kubernetes version, CNI, kube-proxy mode, and Service and Pod CIDRs;
-- OpenStack and Octavia releases and negotiated API microversions;
+- controller release or commit and Gateway API version
+- Kubernetes version, CNI, kube-proxy mode, and Service and Pod CIDRs
+- OpenStack and Octavia releases and negotiated API microversions
 - confirmation that the Octavia provider is Amphora and whether its topology is
-  single or active-standby;
+  `SINGLE` or `ACTIVE_STANDBY`
 - VIP, member, and external network relationships, with private identifiers
-  removed;
-- Node address selection and backend member mode;
-- Floating IP, custom VIP security group, and Barbican availability;
-- the least-privilege roles and relevant quotas;
-- exact tests for traffic, status, restart, drift, deletion, leaks, and
-  conformance; and
-- links to redacted logs or reports that another operator can reproduce.
+  removed
+- Node address selection and backend member mode
+- Floating IP, custom VIP security group, and Barbican availability
+- the minimum required roles and relevant quotas
+- tests run for traffic, status, restart, drift, deletion, leaks, and
+  conformance
+- links to redacted logs and reports, with enough detail for another operator
+  to reproduce the tests
 
 A compatibility statement applies only to the recorded release and environment
 profile. “Works on OpenStack” is not sufficient evidence.
 
 ## Reporting an environment
 
-Use the OpenStack environment report issue template. Reports for the supported
-path must confirm Amphora and name the member reachability model. Share only
-information you are authorized to publish; remove credentials, tokens, tenant
+Use the OpenStack environment report issue template. A report must confirm
+Amphora and explain how Amphora reaches backend members. Publish only
+information you are authorized to share. Remove credentials, tokens, tenant
 identifiers, private addresses, customer names, and other sensitive topology
 details.

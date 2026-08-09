@@ -8,7 +8,8 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: Describe the user or operator problem before the proposed solution.
+      description: >-
+        Describe the user or operator problem before the proposed solution.
     validations:
       required: true
   - type: textarea
@@ -25,7 +26,9 @@ body:
     id: openstack-capability
     attributes:
       label: Required OpenStack capability
-      description: Name the Octavia API, microversion, Neutron, or Barbican capability involved.
+      description: >-
+        Name the Octavia API, microversion, Neutron, or Barbican capability
+        involved.
   - type: textarea
     id: proposal
     attributes:
@@ -33,16 +36,24 @@ body:
   - type: textarea
     id: portability
     attributes:
-      label: Portability and conformance considerations
+      label: Gateway API compatibility
+      description: >-
+        Explain whether the proposal maps cleanly to Gateway API semantics and
+        which conformance tests it affects.
   - type: textarea
     id: ownership-impact
     attributes:
       label: OpenStack ownership impact
-      description: Explain whether the proposal would read or mutate existing worker Neutron ports, security groups, OCCM resources, or other operator-owned resources.
+      description: >-
+        Explain whether the proposal would read or mutate existing worker
+        Neutron ports, security groups, OCCM resources, or other resources owned
+        by the operator.
   - type: checkboxes
     id: ownership
     attributes:
       label: Ownership
       options:
-        - label: I understand that adopting or mutating OCCM-owned resources is out of scope.
+        - label: >-
+            I understand that adopting or mutating resources owned by OCCM is
+            out of scope.
           required: true
