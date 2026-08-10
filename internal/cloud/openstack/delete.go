@@ -104,6 +104,22 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 	if err != nil {
 		return cloud.Outcome{}, err
 	}
+	if observation.loadBalancer != nil {
+		if observation.loadBalancer.ID != managedLoadBalancer.ID {
+			return cloud.Outcome{}, fmt.Errorf(
+				"%w: requested load balancer %s but OpenStack returned %s",
+				cloud.ErrOwnershipConflict,
+				managedLoadBalancer.ID,
+				observation.loadBalancer.ID,
+			)
+		}
+		if err := p.validateLoadBalancerProject(observation.loadBalancer.ID, observation.loadBalancer.ProjectID); err != nil {
+			return cloud.Outcome{}, err
+		}
+		if !identity.MatchesGateway(observation.loadBalancer.Tags, roleLoadBalancer) {
+			return cloud.Outcome{}, fmt.Errorf("%w: load balancer %s changed identity after discovery", cloud.ErrOwnershipConflict, observation.loadBalancer.ID)
+		}
+	}
 	switch observation.phase {
 	case loadBalancerPhaseAbsent:
 		return cloud.ReadyOutcome(), nil
@@ -118,7 +134,10 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 	if err != nil {
 		return cloud.Outcome{}, err
 	}
-	floatingIPPages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: managedLoadBalancer.VipPortID}).AllPages(ctx)
+	floatingIPPages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{
+		PortID:    managedLoadBalancer.VipPortID,
+		ProjectID: p.clients.ProjectID,
+	}).AllPages(ctx)
 	if err != nil {
 		return cloud.Outcome{}, fmt.Errorf("list Floating IPs before Gateway deletion: %w", err)
 	}
@@ -194,7 +213,10 @@ func (p gatewayDeletionPlan) hasRouteResources() bool {
 func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identity, loadBalancerID string) (gatewayDeletionPlan, error) {
 	plan := gatewayDeletionPlan{}
 	listenerSteps := gatewayDeletionPlan{}
-	listenerPages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{LoadbalancerID: loadBalancerID}).AllPages(ctx)
+	listenerPages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{
+		LoadbalancerID: loadBalancerID,
+		ProjectID:      p.clients.ProjectID,
+	}).AllPages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list listeners before Gateway deletion: %w", err)
 	}
@@ -204,10 +226,21 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 	}
 	sort.Slice(listenerList, func(i, j int) bool { return listenerList[i].ID < listenerList[j].ID })
 	for _, listener := range listenerList {
+		if err := p.validateOptionalProject("listener", listener.ID, listener.ProjectID); err != nil {
+			return nil, err
+		}
 		if !identity.MatchesGateway(listener.Tags, roleListener) {
 			return nil, fmt.Errorf("%w: listener %s", cloud.ErrOwnershipConflict, listener.ID)
 		}
-		policyPages, err := l7policies.List(p.clients.LoadBalancer, l7policies.ListOpts{ListenerID: listener.ID}).AllPages(ctx)
+		for _, parent := range listener.Loadbalancers {
+			if parent.ID != loadBalancerID {
+				return nil, fmt.Errorf("%w: listener %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, listener.ID, parent.ID, loadBalancerID)
+			}
+		}
+		policyPages, err := l7policies.List(p.clients.LoadBalancer, l7policies.ListOpts{
+			ListenerID: listener.ID,
+			ProjectID:  p.clients.ProjectID,
+		}).AllPages(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list L7 policies beneath listener %s before Gateway deletion: %w", listener.ID, err)
 		}
@@ -222,10 +255,18 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			return policyList[i].Position < policyList[j].Position
 		})
 		for _, policy := range policyList {
+			if err := p.validateOptionalProject("L7 policy", policy.ID, policy.ProjectID); err != nil {
+				return nil, err
+			}
 			if !matchesAnyGatewayRole(identity, policy.Tags, rolePolicyExact, rolePolicyPrefix) {
 				return nil, fmt.Errorf("%w: L7 policy %s", cloud.ErrOwnershipConflict, policy.ID)
 			}
-			rulePages, err := l7policies.ListRules(p.clients.LoadBalancer, policy.ID, l7policies.ListRulesOpts{}).AllPages(ctx)
+			if policy.ListenerID != "" && policy.ListenerID != listener.ID {
+				return nil, fmt.Errorf("%w: L7 policy %s reports listener %s instead of %s", cloud.ErrOwnershipConflict, policy.ID, policy.ListenerID, listener.ID)
+			}
+			rulePages, err := l7policies.ListRules(p.clients.LoadBalancer, policy.ID, l7policies.ListRulesOpts{
+				ProjectID: p.clients.ProjectID,
+			}).AllPages(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("list L7 rules beneath policy %s before Gateway deletion: %w", policy.ID, err)
 			}
@@ -235,6 +276,9 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			}
 			sort.Slice(ruleList, func(i, j int) bool { return ruleList[i].ID < ruleList[j].ID })
 			for _, rule := range ruleList {
+				if err := p.validateOptionalProject("L7 rule", rule.ID, rule.ProjectID); err != nil {
+					return nil, err
+				}
 				if !matchesAnyGatewayRole(identity, rule.Tags, roleRulePath, roleRuleHost) {
 					return nil, fmt.Errorf("%w: L7 rule %s", cloud.ErrOwnershipConflict, rule.ID)
 				}
@@ -255,7 +299,10 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		})
 	}
 
-	poolPages, err := pools.List(p.clients.LoadBalancer, pools.ListOpts{LoadbalancerID: loadBalancerID}).AllPages(ctx)
+	poolPages, err := pools.List(p.clients.LoadBalancer, pools.ListOpts{
+		LoadbalancerID: loadBalancerID,
+		ProjectID:      p.clients.ProjectID,
+	}).AllPages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list pools before Gateway deletion: %w", err)
 	}
@@ -265,10 +312,21 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 	}
 	sort.Slice(poolList, func(i, j int) bool { return poolList[i].ID < poolList[j].ID })
 	for _, pool := range poolList {
+		if err := p.validateOptionalProject("pool", pool.ID, pool.ProjectID); err != nil {
+			return nil, err
+		}
 		if !identity.MatchesGateway(pool.Tags, rolePool) {
 			return nil, fmt.Errorf("%w: pool %s", cloud.ErrOwnershipConflict, pool.ID)
 		}
-		monitorPages, err := monitors.List(p.clients.LoadBalancer, monitors.ListOpts{PoolID: pool.ID}).AllPages(ctx)
+		for _, parent := range pool.Loadbalancers {
+			if parent.ID != loadBalancerID {
+				return nil, fmt.Errorf("%w: pool %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, pool.ID, parent.ID, loadBalancerID)
+			}
+		}
+		monitorPages, err := monitors.List(p.clients.LoadBalancer, monitors.ListOpts{
+			PoolID:    pool.ID,
+			ProjectID: p.clients.ProjectID,
+		}).AllPages(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list health monitors beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
@@ -278,8 +336,16 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		}
 		sort.Slice(monitorList, func(i, j int) bool { return monitorList[i].ID < monitorList[j].ID })
 		for _, monitor := range monitorList {
+			if err := p.validateOptionalProject("health monitor", monitor.ID, monitor.ProjectID); err != nil {
+				return nil, err
+			}
 			if !identity.MatchesGateway(monitor.Tags, roleMonitor) {
 				return nil, fmt.Errorf("%w: monitor %s", cloud.ErrOwnershipConflict, monitor.ID)
+			}
+			for _, parent := range monitor.Pools {
+				if parent.ID != pool.ID {
+					return nil, fmt.Errorf("%w: health monitor %s reports pool %s instead of %s", cloud.ErrOwnershipConflict, monitor.ID, parent.ID, pool.ID)
+				}
 			}
 			plan = append(plan, gatewayDeletionStep{
 				resource:   gatewayDeletionMonitor,
@@ -287,7 +353,9 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 				parentID:   pool.ID,
 			})
 		}
-		memberPages, err := pools.ListMembers(p.clients.LoadBalancer, pool.ID, pools.ListMembersOpts{}).AllPages(ctx)
+		memberPages, err := pools.ListMembers(p.clients.LoadBalancer, pool.ID, pools.ListMembersOpts{
+			ProjectID: p.clients.ProjectID,
+		}).AllPages(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list members beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
@@ -305,8 +373,14 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			return memberList[i].Address < memberList[j].Address
 		})
 		for _, member := range memberList {
+			if err := p.validateOptionalProject("member", member.ID, member.ProjectID); err != nil {
+				return nil, err
+			}
 			if !identity.MatchesGateway(member.Tags, roleMember) {
 				return nil, fmt.Errorf("%w: member %s", cloud.ErrOwnershipConflict, member.ID)
+			}
+			if member.PoolID != "" && member.PoolID != pool.ID {
+				return nil, fmt.Errorf("%w: member %s reports pool %s instead of %s", cloud.ErrOwnershipConflict, member.ID, member.PoolID, pool.ID)
 			}
 			plan = append(plan, gatewayDeletionStep{
 				resource:   gatewayDeletionMember,

@@ -235,10 +235,10 @@ sensitive data. This lets the controller emit the Event once without inventing
 a ParentStatus. The annotation is removed when cleanup makes progress or the
 binding is cleared. Unit tests cover these rules, including redaction of
 provider error details. OpenStack fault tests and the operator recovery
-procedure are still required. A
-read-only orphan audit will compare Kubernetes ownership records with
-OpenStack resources discovered in the authenticated project without deleting
-anything.
+procedure are still required. The proposed
+[ownership audit contract](docs/design/ownership-audit.md) compares Kubernetes
+ownership records with OpenStack resources discovered in the authenticated
+project without deleting anything.
 
 ### Kubernetes and OpenStack API efficiency
 
