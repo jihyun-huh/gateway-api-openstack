@@ -24,10 +24,12 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 )
 
 func updatePredicate(changed func(client.Object, client.Object) bool) predicate.Predicate {
@@ -54,7 +56,11 @@ func gatewayClassReconcilePredicate() predicate.Predicate {
 			return true
 		}
 		return generationOrDeletionChanged(oldClass, newClass) ||
-			finalizerPresenceChanged(oldClass, newClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
+			finalizerPresenceChanged(oldClass, newClass, gatewayv1.GatewayClassFinalizerGatewaysExist) ||
+			gatewayClassConditionStateFor(oldClass, gatewayv1.GatewayClassConditionStatusAccepted) !=
+				gatewayClassConditionStateFor(newClass, gatewayv1.GatewayClassConditionStatusAccepted) ||
+			gatewayClassConditionStateFor(oldClass, gatewayv1.GatewayClassConditionStatusSupportedVersion) !=
+				gatewayClassConditionStateFor(newClass, gatewayv1.GatewayClassConditionStatusSupportedVersion)
 	})
 }
 
@@ -68,6 +74,51 @@ func gatewayReconcilePredicate(config Config) predicate.Predicate {
 		return generationOrDeletionChanged(oldGateway, newGateway) ||
 			gatewayBindingChanged(config, oldGateway, newGateway)
 	})
+}
+
+func gatewayClassForGatewayPredicate() predicate.Predicate {
+	return updatePredicate(func(oldObject, newObject client.Object) bool {
+		oldClass, oldOK := oldObject.(*gatewayv1.GatewayClass)
+		newClass, newOK := newObject.(*gatewayv1.GatewayClass)
+		if !oldOK || !newOK {
+			return true
+		}
+		return generationOrDeletionChanged(oldClass, newClass) ||
+			gatewayClassConditionStateFor(oldClass, gatewayv1.GatewayClassConditionStatusAccepted) !=
+				gatewayClassConditionStateFor(newClass, gatewayv1.GatewayClassConditionStatusAccepted) ||
+			gatewayClassConditionStateFor(oldClass, gatewayv1.GatewayClassConditionStatusSupportedVersion) !=
+				gatewayClassConditionStateFor(newClass, gatewayv1.GatewayClassConditionStatusSupportedVersion)
+	})
+}
+
+func gatewayAPICRDReconcilePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event event.CreateEvent) bool {
+			return isGatewayAPICRD(event.Object)
+		},
+		DeleteFunc: func(event event.DeleteEvent) bool {
+			return isGatewayAPICRD(event.Object)
+		},
+		UpdateFunc: func(event event.UpdateEvent) bool {
+			if event.ObjectOld == nil || event.ObjectNew == nil {
+				return true
+			}
+			if !isGatewayAPICRDName(event.ObjectOld.GetName()) && !isGatewayAPICRDName(event.ObjectNew.GetName()) {
+				return false
+			}
+			return generationOrDeletionChanged(event.ObjectOld, event.ObjectNew) ||
+				event.ObjectOld.GetName() != event.ObjectNew.GetName() ||
+				event.ObjectOld.GetAnnotations()[gatewayconsts.BundleVersionAnnotation] !=
+					event.ObjectNew.GetAnnotations()[gatewayconsts.BundleVersionAnnotation]
+		},
+		GenericFunc: func(event event.GenericEvent) bool {
+			return isGatewayAPICRD(event.Object)
+		},
+	}
+}
+
+func isGatewayAPICRD(object client.Object) bool {
+	return object != nil && isGatewayAPICRDName(object.GetName())
 }
 
 func httpRouteReconcilePredicate(config Config) predicate.Predicate {
@@ -111,6 +162,7 @@ func gatewayForHTTPRoutePredicate(config Config) predicate.Predicate {
 		}
 		return generationOrDeletionChanged(oldGateway, newGateway) ||
 			gatewayBindingChanged(config, oldGateway, newGateway) ||
+			gatewayAcceptedState(oldGateway) != gatewayAcceptedState(newGateway) ||
 			gatewayProgrammedState(oldGateway) != gatewayProgrammedState(newGateway)
 	})
 }
@@ -212,7 +264,44 @@ func controllerRouteParentStatuses(route *gatewayv1.HTTPRoute, controllerName ga
 type programmedState struct {
 	present            bool
 	status             string
+	reason             string
 	observedGeneration int64
+}
+
+type gatewayClassConditionState struct {
+	present            bool
+	status             metav1.ConditionStatus
+	reason             string
+	observedGeneration int64
+}
+
+func gatewayClassConditionStateFor(
+	gatewayClass *gatewayv1.GatewayClass,
+	conditionType gatewayv1.GatewayClassConditionType,
+) gatewayClassConditionState {
+	condition := meta.FindStatusCondition(gatewayClass.Status.Conditions, string(conditionType))
+	if condition == nil {
+		return gatewayClassConditionState{}
+	}
+	return gatewayClassConditionState{
+		present:            true,
+		status:             condition.Status,
+		reason:             condition.Reason,
+		observedGeneration: condition.ObservedGeneration,
+	}
+}
+
+func gatewayAcceptedState(gateway *gatewayv1.Gateway) programmedState {
+	condition := meta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+	if condition == nil {
+		return programmedState{}
+	}
+	return programmedState{
+		present:            true,
+		status:             string(condition.Status),
+		reason:             condition.Reason,
+		observedGeneration: condition.ObservedGeneration,
+	}
 }
 
 func gatewayProgrammedState(gateway *gatewayv1.Gateway) programmedState {
@@ -223,6 +312,7 @@ func gatewayProgrammedState(gateway *gatewayv1.Gateway) programmedState {
 	return programmedState{
 		present:            true,
 		status:             string(condition.Status),
+		reason:             condition.Reason,
 		observedGeneration: condition.ObservedGeneration,
 	}
 }

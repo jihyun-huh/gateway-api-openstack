@@ -274,56 +274,200 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reconciler.handleGatewayDeleteFailure(context.Background(), current, provider.gatewayErr); err != nil {
+	scope := &gatewayScope{gateway: current, original: current.DeepCopy()}
+	if _, err := reconciler.handleGatewayDeleteFailure(scope, provider.gatewayErr); err != nil {
 		t.Fatalf("handleGatewayDeleteFailure() error = %v", err)
+	}
+	if err := reconciler.patchGateway(context.Background(), scope); err != nil {
+		t.Fatalf("patchGateway() error = %v", err)
 	}
 	if event := receiveEvent(t, recorder); !strings.Contains(event, "AuthorizationFailed") || !strings.Contains(event, "Gateway cleanup") {
 		t.Fatalf("cleanup Event = %q", event)
 	}
-	if _, err := reconciler.handleGatewayDeleteFailure(context.Background(), current, provider.gatewayErr); err != nil {
+	current = &gatewayv1.Gateway{}
+	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
+		t.Fatal(err)
+	}
+	scope = &gatewayScope{gateway: current, original: current.DeepCopy()}
+	if _, err := reconciler.handleGatewayDeleteFailure(scope, provider.gatewayErr); err != nil {
 		t.Fatalf("second handleGatewayDeleteFailure() error = %v", err)
+	}
+	if err := reconciler.patchGateway(context.Background(), scope); err != nil {
+		t.Fatalf("second patchGateway() error = %v", err)
 	}
 	assertNoEvent(t, recorder)
 }
 
 func TestGatewayProviderFailurePreservesProviderAndStatusErrors(t *testing.T) {
 	cfg := testConfig()
+	class := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
 	gateway := programmedTestGateway(cfg)
 	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway).
-		WithObjects(gateway).
+		WithObjects(class, gateway).
 		Build()
 	statusErr := errors.New("forced status patch failure")
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
-	reconciler := GatewayReconciler{Client: kubeClient, Config: cfg}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("token=secret-token"))
+	recorder := events.NewFakeRecorder(1)
+	reconciler := GatewayReconciler{
+		Client: kubeClient, APIReader: kubeClient,
+		Provider:    &recordingProvider{gatewayErr: providerErr},
+		Coordinator: &GraphCoordinator{}, Recorder: recorder, Config: cfg,
+	}
 
-	_, err := reconciler.handleGatewayProviderFailure(context.Background(), gateway, &gateway.Spec.Listeners[0], providerErr)
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)})
 	if !errors.Is(err, providerErr) || !errors.Is(err, statusErr) {
-		t.Fatalf("handleGatewayProviderFailure() error = %v", err)
+		t.Fatalf("Reconcile() error = %v", err)
 	}
 	if strings.Contains(err.Error(), "secret-token") {
-		t.Fatalf("handleGatewayProviderFailure() exposed provider cause: %q", err)
+		t.Fatalf("Reconcile() exposed provider cause: %q", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile() result = %#v, want zero result after patch failure", result)
+	}
+	assertNoEvent(t, recorder)
+}
+
+func TestGatewayWarningIsRecordedAfterStatusPatch(t *testing.T) {
+	cfg := testConfig()
+	class := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	gateway := programmedTestGateway(cfg)
+	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
+		WithStatusSubresource(gateway).
+		WithObjects(class, gateway).
+		Build()
+	statusErr := errors.New("forced status patch failure")
+	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	providerErr := cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("token=secret-token"))
+	recorder := events.NewFakeRecorder(2)
+	reconciler := GatewayReconciler{
+		Client: kubeClient, APIReader: kubeClient,
+		Provider:    &recordingProvider{gatewayErr: providerErr},
+		Coordinator: &GraphCoordinator{}, Recorder: recorder, Config: cfg,
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if !errors.Is(err, providerErr) || !errors.Is(err, statusErr) {
+		t.Fatalf("first Reconcile() error = %v, want provider and status patch failures", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("first Reconcile() exposed provider cause: %q", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("first Reconcile() result = %#v, want zero result", result)
+	}
+	assertNoEvent(t, recorder)
+
+	kubeClient.patchErr = nil
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	if event := receiveEvent(t, recorder); !strings.Contains(event, "AuthenticationFailed") {
+		t.Fatalf("Event = %q", event)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("third Reconcile() error = %v", err)
+	}
+	assertNoEvent(t, recorder)
+}
+
+func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
+	cfg := testConfig()
+	class := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	gateway := programmedTestGateway(cfg)
+	gateway.Spec.Listeners[0].Port = 8080
+	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
+		WithStatusSubresource(gateway).
+		WithObjects(class, gateway).
+		Build()
+	statusErr := errors.New("forced status patch failure")
+	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	provider := &recordingProvider{}
+	reconciler := GatewayReconciler{
+		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+		Coordinator: &GraphCoordinator{}, Config: cfg,
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if !errors.Is(err, statusErr) {
+		t.Fatalf("first Reconcile() error = %v, want status patch failure", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("first Reconcile() result = %#v, want zero result", result)
+	}
+	if len(provider.deletedGateways) != 0 {
+		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	}
+	current := &gatewayv1.Gateway{}
+	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
+		t.Fatal(err)
+	}
+	if !gatewayHasControllerBinding(cfg, current) {
+		t.Fatal("status patch failure removed the Gateway binding")
+	}
+	programmed := meta.FindStatusCondition(current.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+	if programmed == nil || programmed.Status != metav1.ConditionTrue {
+		t.Fatalf("Programmed condition after failed checkpoint = %#v", programmed)
+	}
+
+	kubeClient.patchErr = nil
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("second Reconcile() result = %#v, want status checkpoint", result)
+	}
+	if len(provider.deletedGateways) != 0 {
+		t.Fatalf("DeleteGateway calls while publishing status = %d, want 0", len(provider.deletedGateways))
+	}
+	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
+		t.Fatal(err)
+	}
+	programmed = meta.FindStatusCondition(current.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+	if programmed == nil || programmed.Status != metav1.ConditionFalse {
+		t.Fatalf("Programmed condition after checkpoint = %#v", programmed)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("third Reconcile() error = %v", err)
+	}
+	if len(provider.deletedGateways) != 1 {
+		t.Fatalf("DeleteGateway calls after status checkpoint = %d, want 1", len(provider.deletedGateways))
 	}
 }
 
 func TestHTTPRouteProviderFailurePreservesProviderAndStatusErrors(t *testing.T) {
 	cfg := testConfig()
 	parent := gatewayv1.ParentReference{Name: "edge"}
+	class, gateway := providerRouteParentObjects(cfg)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", UID: "route-uid", Generation: 1},
 		Spec:       gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}}},
 	}
 	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
-		WithObjects(route).
+		WithObjects(class, gateway, route).
 		Build()
 	statusErr := errors.New("forced status patch failure")
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: cfg}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("token=secret-token"))
 
-	_, err := reconciler.handleRouteProviderFailure(context.Background(), route, parent, true, providerErr, "EnsureHTTPRoute")
+	scope := &httpRouteScope{route: route}
+	_, reconcileErr := reconciler.handleRouteProviderFailure(scope, parent, true, providerErr, "EnsureHTTPRoute")
+	patchErr := reconciler.patchHTTPRoute(context.Background(), scope)
+	err := errors.Join(reconcileErr, scope.patchCause, patchErr)
 	if !errors.Is(err, providerErr) || !errors.Is(err, statusErr) {
 		t.Fatalf("handleRouteProviderFailure() error = %v", err)
 	}
@@ -362,7 +506,11 @@ func TestProviderFailureObservedGeneration(t *testing.T) {
 			reconciler := GatewayReconciler{Client: kubeClient, Config: cfg}
 			providerErr := cloud.NewProviderError(test.category, errors.New("provider failure"))
 
-			_, _ = reconciler.handleGatewayProviderFailure(context.Background(), gateway, &gateway.Spec.Listeners[0], providerErr)
+			scope := &gatewayScope{gateway: gateway, original: gateway.DeepCopy()}
+			_, _ = reconciler.handleGatewayProviderFailure(context.Background(), scope, &gateway.Spec.Listeners[0], providerErr)
+			if err := reconciler.patchGateway(context.Background(), scope); err != nil {
+				t.Fatalf("patchGateway() error = %v", err)
+			}
 			current := &gatewayv1.Gateway{}
 			if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
 				t.Fatal(err)
@@ -382,6 +530,7 @@ func TestProviderFailureObservedGeneration(t *testing.T) {
 		t.Run("HTTPRoute "+test.name, func(t *testing.T) {
 			cfg := testConfig()
 			parent := gatewayv1.ParentReference{Name: "edge"}
+			class, gateway := providerRouteParentObjects(cfg)
 			route := &gatewayv1.HTTPRoute{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", UID: "route-uid", Generation: 2},
 				Spec:       gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}}},
@@ -396,12 +545,16 @@ func TestProviderFailureObservedGeneration(t *testing.T) {
 			}
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 				WithStatusSubresource(route).
-				WithObjects(route).
+				WithObjects(class, gateway, route).
 				Build()
 			reconciler := HTTPRouteReconciler{Client: kubeClient, Config: cfg}
 			providerErr := cloud.NewProviderError(test.category, errors.New("provider failure"))
 
-			_, _ = reconciler.handleRouteProviderFailure(context.Background(), route, parent, true, providerErr, "EnsureHTTPRoute")
+			scope := &httpRouteScope{route: route}
+			_, _ = reconciler.handleRouteProviderFailure(scope, parent, true, providerErr, "EnsureHTTPRoute")
+			if err := reconciler.patchHTTPRoute(context.Background(), scope); err != nil {
+				t.Fatalf("patchHTTPRoute() error = %v", err)
+			}
 			current := &gatewayv1.HTTPRoute{}
 			if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 				t.Fatal(err)
@@ -422,6 +575,7 @@ func TestProviderFailureObservedGeneration(t *testing.T) {
 func TestHTTPRouteFailureBeforeBackendEvaluationPreservesResolvedGeneration(t *testing.T) {
 	cfg := testConfig()
 	parent := gatewayv1.ParentReference{Name: "edge"}
+	class, gateway := providerRouteParentObjects(cfg)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", UID: "route-uid", Generation: 2},
 		Spec:       gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}}},
@@ -436,12 +590,16 @@ func TestHTTPRouteFailureBeforeBackendEvaluationPreservesResolvedGeneration(t *t
 	}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
-		WithObjects(route).
+		WithObjects(class, gateway, route).
 		Build()
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: cfg}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRateLimit, errors.New("rate limited"))
 
-	_, _ = reconciler.handleRouteProviderFailure(context.Background(), route, parent, false, providerErr, "DeleteHTTPRoute")
+	scope := &httpRouteScope{route: route}
+	_, _ = reconciler.handleRouteProviderFailure(scope, parent, false, providerErr, "DeleteHTTPRoute")
+	if err := reconciler.patchHTTPRoute(context.Background(), scope); err != nil {
+		t.Fatalf("patchHTTPRoute() error = %v", err)
+	}
 	current := &gatewayv1.HTTPRoute{}
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 		t.Fatal(err)
@@ -458,6 +616,14 @@ func TestHTTPRouteFailureBeforeBackendEvaluationPreservesResolvedGeneration(t *t
 	if programmed == nil || programmed.ObservedGeneration != 1 {
 		t.Fatalf("Programmed condition = %#v", programmed)
 	}
+}
+
+func providerRouteParentObjects(cfg Config) (*gatewayv1.GatewayClass, *gatewayv1.Gateway) {
+	class := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	return class, programmedTestGateway(cfg)
 }
 
 func assertJitteredRequeue(t *testing.T, got, base time.Duration) {
@@ -1001,6 +1167,7 @@ func TestHTTPRouteProviderFailureDuringFinalizationPreservesStatusAndBinding(t *
 func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 	cfg := testConfig()
 	parent := gatewayv1.ParentReference{Name: "edge"}
+	class, gateway := providerRouteParentObjects(cfg)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default", Name: "api", UID: "route-uid", Generation: 1,
@@ -1016,9 +1183,14 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryOwnershipConflict, errors.New("response=private-body"))
 	provider := &recordingProvider{routeDeleteErr: providerErr}
 	recorder := events.NewFakeRecorder(1)
+	updates := []parentStatusUpdate{{
+		parent: parent,
+		status: rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "HTTPRoute configuration is unsupported"),
+	}}
+	applyRouteParentStatuses(cfg, route, updates)
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
-		WithObjects(route).
+		WithObjects(class, gateway, route).
 		Build()
 	current := &gatewayv1.HTTPRoute{}
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
@@ -1028,14 +1200,13 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 		Client: kubeClient, APIReader: kubeClient, Provider: provider,
 		Coordinator: &GraphCoordinator{}, Recorder: recorder, Config: cfg,
 	}
-	updates := []parentStatusUpdate{{
-		parent: parent,
-		status: rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "HTTPRoute configuration is unsupported"),
-	}}
-
-	result, err := reconciler.setRouteStatusesAndDetach(context.Background(), current, updates)
+	scope := &httpRouteScope{route: current}
+	result, err := reconciler.setRouteStatusesAndDetach(context.Background(), scope, updates)
 	if err != nil {
 		t.Fatalf("setRouteStatusesAndDetach() error = %v", err)
+	}
+	if err := reconciler.patchHTTPRoute(context.Background(), scope); err != nil {
+		t.Fatalf("patchHTTPRoute() error = %v", err)
 	}
 	assertJitteredRequeue(t, result.RequeueAfter, ownershipConflictRequeue)
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
@@ -1055,17 +1226,25 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 		t.Fatalf("Event = %q", event)
 	}
 
-	if _, err := reconciler.setRouteStatusesAndDetach(context.Background(), current, updates); err != nil {
+	scope = &httpRouteScope{route: current}
+	if _, err := reconciler.setRouteStatusesAndDetach(context.Background(), scope, updates); err != nil {
 		t.Fatalf("second setRouteStatusesAndDetach() error = %v", err)
+	}
+	if err := reconciler.patchHTTPRoute(context.Background(), scope); err != nil {
+		t.Fatalf("second patchHTTPRoute() error = %v", err)
 	}
 	assertNoEvent(t, recorder)
 
 	provider.routeDeleteErr = nil
 	progressing := cloud.ProgressingOutcome("HTTPRoute cleanup is progressing", time.Second)
 	provider.routeDeleteOut = &progressing
-	result, err = reconciler.setRouteStatusesAndDetach(context.Background(), current, updates)
+	scope = &httpRouteScope{route: current}
+	result, err = reconciler.setRouteStatusesAndDetach(context.Background(), scope, updates)
 	if err != nil {
 		t.Fatalf("progressing setRouteStatusesAndDetach() error = %v", err)
+	}
+	if err := reconciler.patchHTTPRoute(context.Background(), scope); err != nil {
+		t.Fatalf("progressing patchHTTPRoute() error = %v", err)
 	}
 	wantRequeue := providerProgressRequeueAfter(progressing, current.UID)
 	if result.RequeueAfter != wantRequeue {
@@ -1166,10 +1345,13 @@ type patchFailingStatusWriter struct {
 }
 
 func (w *patchFailingStatusWriter) Patch(
-	context.Context,
-	client.Object,
-	client.Patch,
-	...client.SubResourcePatchOption,
+	ctx context.Context,
+	object client.Object,
+	patch client.Patch,
+	options ...client.SubResourcePatchOption,
 ) error {
-	return w.patchErr
+	if w.patchErr != nil {
+		return w.patchErr
+	}
+	return w.SubResourceWriter.Patch(ctx, object, patch, options...)
 }

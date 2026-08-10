@@ -65,6 +65,7 @@ func TestSetupIndexes(t *testing.T) {
 	}
 
 	wantTypes := map[string]client.Object{
+		indexGatewayClassByController:   &gatewayv1.GatewayClass{},
 		indexGatewayByClass:             &gatewayv1.Gateway{},
 		indexHTTPRouteByParentGateway:   &gatewayv1.HTTPRoute{},
 		indexHTTPRouteByStatusGateway:   &gatewayv1.HTTPRoute{},
@@ -87,6 +88,9 @@ func TestSetupIndexes(t *testing.T) {
 			t.Errorf("field index %q object type = %T, want %T", field, index.object, wantObject)
 		}
 	}
+
+	gatewayClass := &gatewayv1.GatewayClass{Spec: gatewayv1.GatewayClassSpec{ControllerName: config.ControllerName}}
+	assertIndexValues(t, indexer, indexGatewayClassByController, gatewayClass, []string{string(config.ControllerName)})
 
 	gateway := &gatewayv1.Gateway{Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack"}}
 	assertIndexValues(t, indexer, indexGatewayByClass, gateway, []string{"openstack"})

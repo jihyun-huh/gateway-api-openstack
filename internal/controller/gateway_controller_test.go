@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -116,11 +117,89 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 	provider := &recordingProvider{}
 	reconciler := &GatewayReconciler{Client: kubeClient, Provider: provider, Config: config}
 
-	_, err := reconciler.cleanupGateway(context.Background(), client.ObjectKeyFromObject(gateway), "stale-resource-version")
+	expected := gateway.DeepCopy()
+	expected.ResourceVersion = "stale-resource-version"
+	scope := &gatewayScope{gateway: expected, original: expected.DeepCopy()}
+	_, err := reconciler.cleanupGateway(context.Background(), scope)
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("cleanupGateway() error = %v, want conflict", err)
 	}
 	if len(provider.deletedGateways) != 0 {
 		t.Fatalf("DeleteGateway calls = %d, want 0", len(provider.deletedGateways))
+	}
+}
+
+func TestGatewayBindingWithoutFinalizerRemainsCleanupResponsibility(t *testing.T) {
+	config := testConfig()
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: "example.net/other-controller"},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   "default",
+			Name:        "edge",
+			UID:         "gateway-uid",
+			Annotations: gatewayBindingAnnotations(config, "80"),
+		},
+		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack"},
+	}
+	kubeClient := indexedFakeClientBuilder(testScheme(t), config).
+		WithObjects(gatewayClass, gateway).
+		Build()
+	provider := &recordingProvider{}
+	reconciler := &GatewayReconciler{
+		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+		Coordinator: &GraphCoordinator{}, Config: config,
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: client.ObjectKeyFromObject(gateway),
+	}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(provider.deletedGateways) != 1 {
+		t.Fatalf("DeleteGateway calls = %d, want 1", len(provider.deletedGateways))
+	}
+	var current gatewayv1.Gateway
+	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), &current); err != nil {
+		t.Fatal(err)
+	}
+	if gatewayHasControllerBinding(config, &current) {
+		t.Fatalf("Gateway binding remained after cleanup: finalizers %#v, annotations %#v", current.Finalizers, current.Annotations)
+	}
+}
+
+func TestGatewayScopeRefreshRejectsConcurrentStatusChange(t *testing.T) {
+	config := testConfig()
+	original := programmedTestGateway(config)
+	original.ResourceVersion = "1"
+	desired := original.DeepCopy()
+	setCondition(&desired.Status.Conditions, condition(
+		string(gatewayv1.GatewayConditionAccepted),
+		metav1.ConditionFalse,
+		string(gatewayv1.GatewayReasonInvalid),
+		"Gateway configuration changed",
+		desired.Generation,
+	))
+	live := original.DeepCopy()
+	live.ResourceVersion = "2"
+	live.Status.Listeners = []gatewayv1.ListenerStatus{{
+		Name: "http",
+		Conditions: []metav1.Condition{condition(
+			"example.net/Observed",
+			metav1.ConditionTrue,
+			"Observed",
+			"Preserve this condition",
+			live.Generation,
+		)},
+	}}
+	scope := &gatewayScope{gateway: desired, original: original}
+
+	if err := scope.refresh(live); !errors.Is(err, errGatewayChanged) {
+		t.Fatalf("refresh() error = %v, want %v", err, errGatewayChanged)
+	}
+	if !reflect.DeepEqual(scope.gateway.Status, desired.Status) || scope.gateway.ResourceVersion != "1" {
+		t.Fatalf("refresh() changed scope after conflict: %#v", scope.gateway)
 	}
 }

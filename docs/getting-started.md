@@ -48,7 +48,16 @@ kubectl apply -f \
 ```
 
 The controller also performs a startup discovery check and exits with a clear
-error when GatewayClass, Gateway, or HTTPRoute is unavailable.
+error when GatewayClass, Gateway, or HTTPRoute is unavailable. After startup it
+checks the bundle version annotation on every installed Gateway API CRD. The
+required CRDs must all come from the v1.6.1 bundle.
+
+When the bundle annotation is missing or versions are mixed, the managed
+GatewayClass reports `SupportedVersion=False` and `Accepted=False` with reason
+`UnsupportedVersion`. The controller does not create or repair OpenStack
+resources until the CRDs match again. It leaves an existing graph in place and
+continues to honor deletion, so a partial CRD upgrade does not remove live
+traffic or prevent finalization.
 
 ## Prepare OpenStack credentials
 
@@ -236,6 +245,6 @@ bypasses ownership checks and cleanup.
 Before uninstalling a shared controller, repeat the HTTPRoute, Gateway, and
 GatewayClass deletion sequence for every class using its exact controller
 name. The final `kubectl delete -k` removes the dedicated
-`openstack-gateway-system` namespace and its credential Secret. It does not and
+`openstack-gateway-system` namespace and its credential Secret. It does not
 remove the cluster-scoped Gateway API CRDs, which may be shared by other
 controllers.

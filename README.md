@@ -94,6 +94,8 @@ The controller currently supports:
 - Octavia listeners, L7 policies and rules, pools, members, and health monitors
 - Floating IP allocation
 - standard Gateway API status conditions
+- validation of the installed Gateway API v1.6.1 CRD bundle through the
+  GatewayClass `SupportedVersion` condition
 - the Amphora provider in Octavia as the only accepted provider
 
 The first release will not claim Gateway API conformance. Amphora

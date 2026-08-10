@@ -127,7 +127,7 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if !result.Requeue || len(provider.gatewaySpecs) != 0 {
+	if result != (ctrl.Result{Requeue: true}) || len(provider.gatewaySpecs) != 0 {
 		t.Fatalf("binding checkpoint result = %#v, EnsureGateway calls = %d", result, len(provider.gatewaySpecs))
 	}
 	secondResult, err := reconciler.Reconcile(context.Background(), request)
@@ -185,8 +185,17 @@ func TestGatewayInvalidSpecCleansPreviouslyManagedResources(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("Reconcile() result = %#v, want status checkpoint", result)
+	}
+	if len(provider.deletedGateways) != 0 {
+		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	if len(provider.deletedGateways) != 1 || provider.deletedGateways[0].GatewayUID != string(gateway.UID) {
 		t.Fatalf("deleted Gateway identities = %#v", provider.deletedGateways)
@@ -218,8 +227,11 @@ func TestGatewayInvalidSpecPublishesStatusBeforeCleanupRetry(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{gatewayDeleteErr: errors.New("temporary delete failure")}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err == nil {
-		t.Fatal("Reconcile() unexpectedly succeeded")
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("first Reconcile() result = %#v, want status checkpoint", result)
 	}
 	var got gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, &got); err != nil {
@@ -231,6 +243,12 @@ func TestGatewayInvalidSpecPublishesStatusBeforeCleanupRetry(t *testing.T) {
 	}
 	if !controllerutil.ContainsFinalizer(&got, cfg.gatewayFinalizer()) {
 		t.Fatal("cleanup failure removed the safety finalizer")
+	}
+	if len(provider.deletedGateways) != 0 {
+		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("second Reconcile() unexpectedly succeeded")
 	}
 }
 
@@ -281,9 +299,19 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
-	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}})
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
+	result, err := reconciler.Reconcile(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("Reconcile() result = %#v, want status checkpoint", result)
+	}
+	if len(provider.deletedGateways) != 0 || len(provider.gatewaySpecs) != 0 {
+		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.deletedGateways), len(provider.gatewaySpecs))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	if len(provider.deletedGateways) != 1 || len(provider.gatewaySpecs) != 0 {
 		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.deletedGateways), len(provider.gatewaySpecs))
@@ -295,14 +323,13 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 	if controllerutil.ContainsFinalizer(&got, cfg.gatewayFinalizer()) || got.Annotations[cfg.gatewayListenerPortAnnotation()] != "" {
 		t.Fatalf("Gateway replacement metadata = finalizers %#v, annotations %#v", got.Finalizers, got.Annotations)
 	}
-	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
 	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
-		t.Fatalf("second Reconcile() error = %v", err)
-	} else if !result.Requeue {
-		t.Fatalf("second Reconcile() result = %#v, want binding checkpoint", result)
+		t.Fatalf("third Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("third Reconcile() result = %#v, want binding checkpoint", result)
 	}
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
-		t.Fatalf("third Reconcile() error = %v", err)
+		t.Fatalf("fourth Reconcile() error = %v", err)
 	}
 	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].ListenerPort != 8080 {
 		t.Fatalf("Gateway ensures = %#v", provider.gatewaySpecs)
@@ -327,7 +354,7 @@ func TestGatewayBindingRejectsClusterIdentityDrift(t *testing.T) {
 	}
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, APIReader: kubeClient, Provider: provider, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -406,7 +433,7 @@ func TestGatewayUnsupportedAddressUsesGatewayLevelReason(t *testing.T) {
 	}
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, APIReader: kubeClient, Provider: provider, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -498,7 +525,7 @@ func TestGatewayInvalidAllowedRouteKindsSetsResolvedRefs(t *testing.T) {
 		}}},
 	}
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, APIReader: kubeClient, Provider: &recordingProvider{}, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -556,7 +583,7 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if !result.Requeue || provider.gatewayGets != 0 || len(provider.routeSpecs) != 0 {
+	if result != (ctrl.Result{Requeue: true}) || provider.gatewayGets != 0 || len(provider.routeSpecs) != 0 {
 		t.Fatalf("binding checkpoint result = %#v, GetGateway calls = %d, EnsureRoute calls = %d", result, provider.gatewayGets, len(provider.routeSpecs))
 	}
 	secondResult, err := reconciler.Reconcile(context.Background(), request)
@@ -633,8 +660,17 @@ func TestHTTPRouteDetachDeletesStoredResourcesAndMetadata(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(route).Build()
 	provider := &recordingProvider{}
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err != nil {
-		t.Fatalf("Reconcile() error = %v", err)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("first Reconcile() result = %#v, want status checkpoint", result)
+	}
+	if len(provider.deletedRoutes) != 0 {
+		t.Fatalf("DeleteRoute calls before status checkpoint = %d, want 0", len(provider.deletedRoutes))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	if len(provider.deletedRoutes) != 1 || provider.deletedRoutes[0].GatewayUID != "old-gateway-uid" {
 		t.Fatalf("deleted route identities = %#v", provider.deletedRoutes)
@@ -684,8 +720,17 @@ func TestHTTPRouteParentChangeDetachesOldGatewayWhileNewGatewayPending(t *testin
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, newGateway, route).Build()
 	provider := &recordingProvider{}
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err != nil {
-		t.Fatalf("Reconcile() error = %v", err)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	} else if result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("first Reconcile() result = %#v, want status checkpoint", result)
+	}
+	if len(provider.deletedRoutes) != 0 {
+		t.Fatalf("DeleteRoute calls before status checkpoint = %d, want 0", len(provider.deletedRoutes))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	if len(provider.deletedRoutes) != 1 || provider.deletedRoutes[0].GatewayUID != "old-gateway-uid" {
 		t.Fatalf("deleted route identities = %#v", provider.deletedRoutes)
@@ -945,14 +990,18 @@ func TestTerminalServiceProfileDoesNotSelfWinOrInflateAttachedRoutes(t *testing.
 func TestBindRouteRefetchesBeforePatchingMetadata(t *testing.T) {
 	scheme := testScheme(t)
 	cfg := testConfig()
-	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
-		Namespace:  "default",
-		Name:       "api",
-		UID:        "route-uid",
-		Generation: 1,
-	}}
+	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
+	route.UID = "route-uid"
+	route.Generation = 1
 	gateway := programmedTestGateway(cfg)
-	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(route).Build()
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	service, endpointSlice, node := validNodePortBackend("default", "backend")
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).
+		WithObjects(route, gateway, gatewayClass, service, endpointSlice, node).
+		Build()
 
 	staleRoute := route.DeepCopy()
 	current := &gatewayv1.HTTPRoute{}
@@ -964,7 +1013,7 @@ func TestBindRouteRefetchesBeforePatchingMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, APIReader: kubeClient, Provider: &recordingProvider{}, Config: cfg}
 	bindingStored, err := reconciler.bindRoute(context.Background(), staleRoute, gateway)
 	if err != nil {
 		t.Fatalf("bindRoute() error = %v", err)
@@ -997,7 +1046,7 @@ func TestBindRouteRejectsStaleGeneration(t *testing.T) {
 	staleRoute := current.DeepCopy()
 	staleRoute.Generation = 1
 
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, APIReader: kubeClient, Provider: &recordingProvider{}, Config: cfg}
 	if _, err := reconciler.bindRoute(context.Background(), staleRoute, programmedTestGateway(cfg)); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("bindRoute() error = %v, want %v", err, errHTTPRouteChanged)
 	}
@@ -1178,7 +1227,7 @@ func (c *conflictOncePatchClient) Patch(ctx context.Context, object client.Objec
 			current.Annotations = map[string]string{}
 		}
 		current.Annotations["example.com/concurrent"] = "preserve"
-		if err := c.Client.Update(ctx, current); err != nil {
+		if err := c.Update(ctx, current); err != nil {
 			return err
 		}
 		return apierrors.NewConflict(

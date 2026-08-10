@@ -18,9 +18,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/api/equality"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -38,52 +39,124 @@ import (
 // still reference it.
 type GatewayClassReconciler struct {
 	client.Client
-	Config Config
+	APIReader client.Reader
+	Config    Config
 }
 
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
-func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *GatewayClassReconciler) Reconcile(
+	ctx context.Context,
+	req ctrl.Request,
+) (result ctrl.Result, retErr error) {
+	if r.APIReader == nil {
+		return ctrl.Result{}, errAPIReaderRequired
+	}
 	logger := log.FromContext(ctx).WithValues("gatewayClass", req.Name)
 	ctx = log.IntoContext(ctx, logger)
 	logger.V(4).Info("Reconciling GatewayClass")
 
-	var gatewayClass gatewayv1.GatewayClass
-	if err := r.Get(ctx, req.NamespacedName, &gatewayClass); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	scope, responsible, err := r.newGatewayClassScope(ctx, req)
+	if err != nil || !responsible {
+		return ctrl.Result{}, err
 	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
-		logger.V(4).Info("Ignoring GatewayClass assigned to another controller", "controllerName", gatewayClass.Spec.ControllerName)
+	defer func() {
+		if err := r.patchGatewayClass(ctx, scope); err != nil {
+			result = ctrl.Result{}
+			retErr = errors.Join(retErr, err)
+		}
+	}()
+
+	if !scope.gatewayClass.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, scope)
+	}
+	return r.reconcileNormal(ctx, scope)
+}
+
+func (r *GatewayClassReconciler) reconcileDelete(
+	ctx context.Context,
+	scope *gatewayClassScope,
+) (ctrl.Result, error) {
+	hasGateways, err := r.reconcileGatewayClassReferences(ctx, scope)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if scope.finalizerChanged() {
 		return ctrl.Result{}, nil
 	}
+	if !hasGateways {
+		return ctrl.Result{}, nil
+	}
+	return r.reconcileGatewayClassStatus(ctx, scope)
+}
 
-	hasGateways, err := r.hasReferencingGateways(ctx, gatewayClass.Name)
+func (r *GatewayClassReconciler) reconcileNormal(
+	ctx context.Context,
+	scope *gatewayClassScope,
+) (ctrl.Result, error) {
+	if _, err := r.reconcileGatewayClassReferences(ctx, scope); err != nil {
+		return ctrl.Result{}, err
+	}
+	if scope.finalizerChanged() {
+		return ctrl.Result{}, nil
+	}
+	return r.reconcileGatewayClassStatus(ctx, scope)
+}
+
+func (r *GatewayClassReconciler) reconcileGatewayClassReferences(
+	ctx context.Context,
+	scope *gatewayClassScope,
+) (bool, error) {
+	hasGateways, err := r.hasReferencingGateways(ctx, scope.gatewayClass.Name)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("list Gateways referencing GatewayClass: %w", err)
+		return false, fmt.Errorf("list Gateways referencing GatewayClass: %w", err)
 	}
-	metadataBase := gatewayClass.DeepCopy()
-	hadFinalizer := controllerutil.ContainsFinalizer(&gatewayClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
 	if hasGateways {
-		controllerutil.AddFinalizer(&gatewayClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
+		controllerutil.AddFinalizer(scope.gatewayClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
 	} else {
-		controllerutil.RemoveFinalizer(&gatewayClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
+		controllerutil.RemoveFinalizer(scope.gatewayClass, gatewayv1.GatewayClassFinalizerGatewaysExist)
 	}
-	if !equality.Semantic.DeepEqual(metadataBase.Finalizers, gatewayClass.Finalizers) {
-		if err := r.Patch(ctx, &gatewayClass, optimisticMergeFrom(metadataBase)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("patch GatewayClass finalizer: %w", err)
-		}
-		logger.V(1).Info("Updated GatewaysExist finalizer on GatewayClass", "added", !hadFinalizer)
-		// Removing the last finalizer from a deleting class can delete it before a
-		// status update is possible.
-		if !hasGateways && !gatewayClass.DeletionTimestamp.IsZero() {
-			return ctrl.Result{}, nil
-		}
-	}
+	return hasGateways, nil
+}
 
-	statusBase := gatewayClass.DeepCopy()
-	if gatewayClass.Spec.ParametersRef != nil {
+func (r *GatewayClassReconciler) reconcileGatewayClassStatus(
+	ctx context.Context,
+	scope *gatewayClassScope,
+) (ctrl.Result, error) {
+	gatewayClass := scope.gatewayClass
+	versionObservation, err := observeGatewayAPIVersion(ctx, r.APIReader)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if versionObservation.supported {
+		setCondition(&gatewayClass.Status.Conditions, condition(
+			string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
+			metav1.ConditionTrue,
+			string(gatewayv1.GatewayClassReasonSupportedVersion),
+			versionObservation.message,
+			gatewayClass.Generation,
+		))
+	} else {
+		gatewayClass.Status.SupportedFeatures = nil
+		setCondition(&gatewayClass.Status.Conditions, condition(
+			string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
+			metav1.ConditionFalse,
+			string(gatewayv1.GatewayClassReasonUnsupportedVersion),
+			versionObservation.message,
+			gatewayClass.Generation,
+		))
+		setCondition(&gatewayClass.Status.Conditions, condition(
+			string(gatewayv1.GatewayClassConditionStatusAccepted),
+			metav1.ConditionFalse,
+			string(gatewayv1.GatewayClassReasonUnsupportedVersion),
+			versionObservation.message,
+			gatewayClass.Generation,
+		))
+	}
+	if versionObservation.supported && gatewayClass.Spec.ParametersRef != nil {
 		gatewayClass.Status.SupportedFeatures = nil
 		setCondition(&gatewayClass.Status.Conditions, condition(
 			string(gatewayv1.GatewayClassConditionStatusAccepted),
@@ -92,7 +165,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			"GatewayClass parametersRef is not supported in Phase 1",
 			gatewayClass.Generation,
 		))
-	} else {
+	} else if versionObservation.supported {
 		gatewayClass.Status.SupportedFeatures = phase1SupportedFeatures()
 		setCondition(&gatewayClass.Status.Conditions, condition(
 			string(gatewayv1.GatewayClassConditionStatusAccepted),
@@ -102,14 +175,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			gatewayClass.Generation,
 		))
 	}
-	if equality.Semantic.DeepEqual(statusBase.Status, gatewayClass.Status) {
-		return ctrl.Result{}, nil
+	result := ctrl.Result{}
+	if !versionObservation.supported {
+		result.RequeueAfter = gatewayAPIVersionRequeueAfter(gatewayClass.UID)
 	}
-	if err := r.Status().Patch(ctx, &gatewayClass, optimisticMergeFrom(statusBase)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patch GatewayClass status: %w", err)
-	}
-	logger.V(1).Info("Updated GatewayClass status", "accepted", gatewayClass.Spec.ParametersRef == nil)
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 func (r *GatewayClassReconciler) hasReferencingGateways(ctx context.Context, className string) (bool, error) {
@@ -137,15 +207,45 @@ func gatewayClassRequestsForGateway(_ context.Context, object client.Object) []r
 	}}
 }
 
+func (r *GatewayClassReconciler) gatewayClassRequestsForGatewayAPICRD(ctx context.Context, object client.Object) []reconcile.Request {
+	if object == nil || !isGatewayAPICRDName(object.GetName()) {
+		return nil
+	}
+	var gatewayClasses gatewayv1.GatewayClassList
+	if err := r.List(ctx, &gatewayClasses, client.MatchingFields{
+		indexGatewayClassByController: string(r.Config.ControllerName),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "Could not list GatewayClasses for Gateway API CRD")
+		return nil
+	}
+	keys := make(map[types.NamespacedName]struct{}, len(gatewayClasses.Items))
+	for _, gatewayClass := range gatewayClasses.Items {
+		keys[types.NamespacedName{Name: gatewayClass.Name}] = struct{}{}
+	}
+	return sortedRequests(keys)
+}
+
 // SetupWithManager registers GatewayClass reconciliation and requeues a class
 // whenever one of its referencing Gateways changes.
 func (r *GatewayClassReconciler) SetupWithManager(manager ctrl.Manager) error {
+	if r.APIReader == nil {
+		return errAPIReaderRequired
+	}
+	definition := &metav1.PartialObjectMetadata{}
+	definition.SetGroupVersionKind(
+		apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"),
+	)
 	return ctrl.NewControllerManagedBy(manager).
 		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(gatewayClassReconcilePredicate())).
 		Watches(
 			&gatewayv1.Gateway{},
 			handler.EnqueueRequestsFromMapFunc(gatewayClassRequestsForGateway),
 			builder.WithPredicates(updatePredicate(generationOrDeletionChanged)),
+		).
+		WatchesMetadata(
+			definition,
+			handler.EnqueueRequestsFromMapFunc(r.gatewayClassRequestsForGatewayAPICRD),
+			builder.WithPredicates(gatewayAPICRDReconcilePredicate()),
 		).
 		Named("gatewayclass").
 		Complete(r)

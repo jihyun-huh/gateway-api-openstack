@@ -60,12 +60,12 @@ func (p *Provider) observeLoadBalancerOnce(ctx context.Context, loadBalancerID s
 	case loadBalancer.ProvisioningStatus == "ERROR":
 		return loadBalancerObservation{}, cloud.NewProviderError(
 			cloud.ErrorCategoryResourceFailure,
-			fmt.Errorf("Octavia load balancer provisioning status is ERROR"),
+			fmt.Errorf("octavia load balancer provisioning status is ERROR"),
 		)
 	default:
 		return loadBalancerObservation{}, cloud.NewProviderError(
 			cloud.ErrorCategoryResourceFailure,
-			fmt.Errorf("Octavia load balancer has unknown provisioning status %q", loadBalancer.ProvisioningStatus),
+			fmt.Errorf("octavia load balancer has unknown provisioning status %q", loadBalancer.ProvisioningStatus),
 		)
 	}
 }
