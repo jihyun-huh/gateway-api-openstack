@@ -25,17 +25,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 func TestGatewayRequestsForHTTPRoute(t *testing.T) {
+	config := testConfig()
 	gatewayNamespace := gatewayv1.Namespace("gateway-system")
 	otherGroup := gatewayv1.Group("example.com")
 	otherKind := gatewayv1.Kind("Other")
 	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api"},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "api",
+			Annotations: map[string]string{
+				config.routeGatewayNamespaceAnnotation(): "previous",
+				config.routeGatewayNameAnnotation():      "bound",
+				config.routeGatewayUIDAnnotation():       "bound-uid",
+			},
+		},
 		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{
 			{Name: "edge"},
 			{Name: "edge"},
@@ -43,17 +51,24 @@ func TestGatewayRequestsForHTTPRoute(t *testing.T) {
 			{Name: "other-group", Group: &otherGroup},
 			{Name: "other-kind", Kind: &otherKind},
 		}}},
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{Parents: []gatewayv1.RouteParentStatus{
+			{ParentRef: gatewayv1.ParentReference{Name: "status-parent"}, ControllerName: config.ControllerName},
+			{ParentRef: gatewayv1.ParentReference{Name: "foreign-status"}, ControllerName: "example.com/foreign"},
+		}}},
 	}
 
-	requests := gatewayRequestsForHTTPRoute(context.Background(), route)
+	reconciler := &GatewayReconciler{Config: config}
+	requests := reconciler.gatewayRequestsForHTTPRoute(context.Background(), route)
 	want := []reconcile.Request{
 		{NamespacedName: types.NamespacedName{Namespace: "default", Name: "edge"}},
+		{NamespacedName: types.NamespacedName{Namespace: "default", Name: "status-parent"}},
 		{NamespacedName: types.NamespacedName{Namespace: "gateway-system", Name: "shared"}},
+		{NamespacedName: types.NamespacedName{Namespace: "previous", Name: "bound"}},
 	}
 	if !reflect.DeepEqual(requests, want) {
 		t.Fatalf("gatewayRequestsForHTTPRoute() = %#v, want %#v", requests, want)
 	}
-	if requests := gatewayRequestsForHTTPRoute(context.Background(), &gatewayv1.Gateway{}); requests != nil {
+	if requests := reconciler.gatewayRequestsForHTTPRoute(context.Background(), &gatewayv1.Gateway{}); requests != nil {
 		t.Fatalf("requests for non-HTTPRoute object = %#v, want nil", requests)
 	}
 }
@@ -67,8 +82,7 @@ func TestGatewayRequestsForGatewayClass(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "other"},
 		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "other"},
 	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
+	kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).
 		WithObjects(matchingGateway, otherGateway).
 		Build()
 	reconciler := &GatewayReconciler{Client: kubeClient}
@@ -96,8 +110,7 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 			Annotations: gatewayBindingAnnotations(config, "80"),
 		},
 	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
+	kubeClient := indexedFakeClientBuilder(testScheme(t), config).
 		WithObjects(gateway).
 		Build()
 	provider := &recordingProvider{}

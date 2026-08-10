@@ -24,12 +24,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -61,9 +62,9 @@ func TestHTTPRouteDeletionUsesStoredGatewayUID(t *testing.T) {
 			},
 		},
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(route).Build()
+	client := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(route).Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: client, Provider: provider, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: client, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: client, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "api"}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -90,7 +91,7 @@ func TestHTTPRouteDeletionRejectsTamperedStoredGatewayIdentity(t *testing.T) {
 			},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(route).Build()
 	provider := &recordingProvider{}
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err == nil {
@@ -118,11 +119,19 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 			Type: "example.net/Custom", Status: metav1.ConditionTrue, Reason: "Preserve", LastTransitionTime: metav1.Now(),
 		}}}}},
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(class, gateway).WithObjects(class, gateway).Build()
+	client := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(class, gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: client, Provider: provider, Config: testConfig()}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "edge"}}); err != nil {
+	reconciler := GatewayReconciler{Client: client, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: client, Config: testConfig()}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "edge"}}
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.Requeue || len(provider.gatewaySpecs) != 0 {
+		t.Fatalf("binding checkpoint result = %#v, EnsureGateway calls = %d", result, len(provider.gatewaySpecs))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	var got gatewayv1.Gateway
 	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "edge"}, &got); err != nil {
@@ -154,9 +163,9 @@ func TestGatewayInvalidSpecCleansPreviouslyManagedResources(t *testing.T) {
 			Listeners:        []gatewayv1.Listener{{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -187,9 +196,9 @@ func TestGatewayInvalidSpecPublishesStatusBeforeCleanupRetry(t *testing.T) {
 			Listeners:        []gatewayv1.Listener{{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{gatewayDeleteErr: errors.New("temporary delete failure")}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err == nil {
 		t.Fatal("Reconcile() unexpectedly succeeded")
 	}
@@ -217,9 +226,9 @@ func TestGatewayClassHandoffCleansControllerResources(t *testing.T) {
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -250,9 +259,9 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 8080}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -267,8 +276,14 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 	if controllerutil.ContainsFinalizer(&got, cfg.gatewayFinalizer()) || got.Annotations[cfg.gatewayListenerPortAnnotation()] != "" {
 		t.Fatalf("Gateway replacement metadata = finalizers %#v, annotations %#v", got.Finalizers, got.Annotations)
 	}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
+	} else if !result.Requeue {
+		t.Fatalf("second Reconcile() result = %#v, want binding checkpoint", result)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("third Reconcile() error = %v", err)
 	}
 	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].ListenerPort != 8080 {
 		t.Fatalf("Gateway ensures = %#v", provider.gatewaySpecs)
@@ -291,7 +306,7 @@ func TestGatewayBindingRejectsClusterIdentityDrift(t *testing.T) {
 		},
 		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
@@ -318,11 +333,18 @@ func TestGatewayOpenStackFailurePreservesAttachedRouteCount(t *testing.T) {
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1},
-		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1,
+			Finalizers:  []string{cfg.gatewayFinalizer()},
+			Annotations: gatewayBindingAnnotations(cfg, "80"),
+		},
+		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
 	}
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", Generation: 1},
+		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{
+			Name: "edge",
+		}}}},
 		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{Parents: []gatewayv1.RouteParentStatus{{
 			ParentRef: gatewayv1.ParentReference{Name: "edge"}, ControllerName: cfg.ControllerName,
 			Conditions: []metav1.Condition{{
@@ -335,9 +357,9 @@ func TestGatewayOpenStackFailurePreservesAttachedRouteCount(t *testing.T) {
 	otherRoute := route.DeepCopy()
 	otherRoute.Name = "wrong-port"
 	otherRoute.Status.Parents[0].ParentRef.Port = &wrongPort
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway, route, otherRoute).WithObjects(class, gateway, route, otherRoute).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway, route, otherRoute).WithObjects(class, gateway, route, otherRoute).Build()
 	provider := &recordingProvider{gatewayErr: errors.New("temporary Octavia failure")}
-	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err == nil {
 		t.Fatal("Reconcile() unexpectedly succeeded")
 	}
@@ -363,7 +385,7 @@ func TestGatewayUnsupportedAddressUsesGatewayLevelReason(t *testing.T) {
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
@@ -399,7 +421,7 @@ func TestRoutesForGatewayIncludesCrossNamespaceReferences(t *testing.T) {
 			Name: gatewayv1.ObjectName(gateway.Name), Namespace: &parentNamespace,
 		}}}},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(gateway, route).Build()
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: testConfig()}
 	requests := reconciler.enqueueHTTPRoutesForGateway(context.Background(), gateway)
 	if len(requests) != 1 || requests[0].NamespacedName != (types.NamespacedName{Namespace: route.Namespace, Name: route.Name}) {
@@ -456,7 +478,7 @@ func TestGatewayInvalidAllowedRouteKindsSetsResolvedRefs(t *testing.T) {
 			AllowedRoutes: &gatewayv1.AllowedRoutes{Kinds: []gatewayv1.RouteGroupKind{{Group: &group, Kind: "GRPCRoute"}}},
 		}}},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -479,8 +501,12 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.gatewayFinalizer()}, Generation: 1},
-		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1,
+			Finalizers:  []string{cfg.gatewayFinalizer()},
+			Annotations: gatewayBindingAnnotations(cfg, "80"),
+		},
+		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
 		Status: gatewayv1.GatewayStatus{Conditions: []metav1.Condition{{
 			Type:               string(gatewayv1.GatewayConditionProgrammed),
 			Status:             metav1.ConditionTrue,
@@ -503,11 +529,19 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	ready := true
 	slice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}}, Endpoints: []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.11"}}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(class, gateway, route, service, slice, node).Build()
+	client := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, gateway, route, service, slice, node).Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: client, Provider: provider, Config: cfg}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "api"}}); err != nil {
+	reconciler := HTTPRouteReconciler{Client: client, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: client, Config: cfg}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "api"}}
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.Requeue || provider.gatewayGets != 0 || len(provider.routeSpecs) != 0 {
+		t.Fatalf("binding checkpoint result = %#v, GetGateway calls = %d, EnsureRoute calls = %d", result, provider.gatewayGets, len(provider.routeSpecs))
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	if len(provider.routeSpecs) != 1 {
 		var current gatewayv1.HTTPRoute
@@ -553,9 +587,9 @@ func TestHTTPRouteDetachDeletesStoredResourcesAndMetadata(t *testing.T) {
 			}},
 		}}}},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(route).Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -579,7 +613,11 @@ func TestHTTPRouteParentChangeDetachesOldGatewayWhileNewGatewayPending(t *testin
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	newGateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "new-gateway", UID: "new-gateway-uid", Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default", Name: "new-gateway", UID: "new-gateway-uid", Generation: 1,
+			Finalizers:  []string{cfg.gatewayFinalizer()},
+			Annotations: gatewayBindingAnnotations(cfg, "80"),
+		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}},
@@ -600,9 +638,9 @@ func TestHTTPRouteParentChangeDetachesOldGatewayWhileNewGatewayPending(t *testin
 			Rules:           []gatewayv1.HTTPRouteRule{{BackendRefs: []gatewayv1.HTTPBackendRef{{BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{Name: "backend", Port: portNumberPointer(80)}}}}}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(class, newGateway, route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, newGateway, route).Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -634,9 +672,9 @@ func TestHTTPRouteMissingBackendSetsResolvedRefsWhileGatewayPending(t *testing.T
 			}}}}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(route).WithObjects(class, gateway, route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, gateway, route).Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -671,7 +709,7 @@ func TestRouteSelectionIgnoresOlderRouteForWrongListenerSection(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "current", CreationTimestamp: newer},
 		Spec:       gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{Name: "edge"}}}, Rules: []gatewayv1.HTTPRouteRule{{BackendRefs: []gatewayv1.HTTPBackendRef{{BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{Name: "backend", Port: portNumberPointer(80)}}}}}}},
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldRoute, current).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(oldRoute, current).Build()
 	gateway := programmedTestGateway(testConfig())
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: testConfig()}
 	selected, err := reconciler.isSelectedRoute(context.Background(), current, managedRouteParent{
@@ -699,7 +737,7 @@ func TestRouteSelectionIgnoresOlderRejectedClusterIPProfile(t *testing.T) {
 	}
 	clusterIP := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "cluster-ip"}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP}}
 	nodePort := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "node-port"}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort}}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldRoute, current, clusterIP, nodePort).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(oldRoute, current, clusterIP, nodePort).Build()
 	gateway := programmedTestGateway(testConfig())
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: testConfig()}
 	selected, err := reconciler.isSelectedRoute(context.Background(), current, managedRouteParent{
@@ -732,7 +770,7 @@ func TestRouteCanReserveSlotRejectsTerminalServiceProfiles(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: test.spec}
-			kubeClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(service).Build()
+			kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(service).Build()
 			reconciler := HTTPRouteReconciler{Client: kubeClient, Config: testConfig()}
 			canReserve, err := reconciler.routeCanReserveSlot(context.Background(), route)
 			if err != nil {
@@ -797,18 +835,23 @@ func TestTerminalServiceProfileDoesNotSelfWinOrInflateAttachedRoutes(t *testing.
 			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		},
 	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).
 		WithStatusSubresource(&gatewayv1.HTTPRoute{}).
 		WithObjects(class, gateway, terminalRoute, validRoute, udpService, tcpService, slice, node).
 		Build()
 	provider := &recordingProvider{}
-	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
+	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	ctx := context.Background()
 	for _, route := range []*gatewayv1.HTTPRoute{terminalRoute, validRoute} {
 		if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(route)}); err != nil {
 			t.Fatalf("Reconcile(%s) error = %v", route.Name, err)
 		}
+	}
+	if len(provider.routeSpecs) != 0 {
+		t.Fatalf("EnsureRoute calls before binding checkpoint = %d, want 0", len(provider.routeSpecs))
+	}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(validRoute)}); err != nil {
+		t.Fatalf("second Reconcile(%s) error = %v", validRoute.Name, err)
 	}
 
 	var gotTerminal gatewayv1.HTTPRoute
@@ -866,7 +909,7 @@ func TestBindRouteRefetchesBeforePatchingMetadata(t *testing.T) {
 		Generation: 1,
 	}}
 	gateway := programmedTestGateway(cfg)
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(route).Build()
 
 	staleRoute := route.DeepCopy()
 	current := &gatewayv1.HTTPRoute{}
@@ -879,8 +922,12 @@ func TestBindRouteRefetchesBeforePatchingMetadata(t *testing.T) {
 	}
 
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
-	if err := reconciler.bindRoute(context.Background(), staleRoute, gateway); err != nil {
+	bindingStored, err := reconciler.bindRoute(context.Background(), staleRoute, gateway)
+	if err != nil {
 		t.Fatalf("bindRoute() error = %v", err)
+	}
+	if !bindingStored {
+		t.Fatal("bindRoute() did not report the metadata checkpoint")
 	}
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 		t.Fatal(err)
@@ -903,12 +950,12 @@ func TestBindRouteRejectsStaleGeneration(t *testing.T) {
 		UID:        "route-uid",
 		Generation: 2,
 	}}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(current).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(current).Build()
 	staleRoute := current.DeepCopy()
 	staleRoute.Generation = 1
 
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: &recordingProvider{}, Config: cfg}
-	if err := reconciler.bindRoute(context.Background(), staleRoute, programmedTestGateway(cfg)); !errors.Is(err, errHTTPRouteChanged) {
+	if _, err := reconciler.bindRoute(context.Background(), staleRoute, programmedTestGateway(cfg)); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("bindRoute() error = %v, want %v", err, errHTTPRouteChanged)
 	}
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(current), current); err != nil {
@@ -934,7 +981,7 @@ func TestDetachRouteRejectsStaleGeneration(t *testing.T) {
 			cfg.routeGatewayUIDAnnotation():       "gateway-uid",
 		},
 	}}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(route).Build()
 	staleRoute := route.DeepCopy()
 	staleRoute.Generation = 1
 	provider := &recordingProvider{}
@@ -955,6 +1002,60 @@ func TestDetachRouteRejectsStaleGeneration(t *testing.T) {
 	}
 }
 
+func TestDetachRouteDoesNotRepeatCloudDeleteAfterPatchConflict(t *testing.T) {
+	scheme := testScheme(t)
+	cfg := testConfig()
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
+		Namespace:  "default",
+		Name:       "api",
+		UID:        "route-uid",
+		Generation: 1,
+		Finalizers: routeBindingFinalizers(cfg, "default", "edge", "gateway-uid"),
+		Annotations: map[string]string{
+			cfg.routeGatewayNamespaceAnnotation(): "default",
+			cfg.routeGatewayNameAnnotation():      "edge",
+			cfg.routeGatewayUIDAnnotation():       "gateway-uid",
+		},
+	}}
+	baseClient := indexedFakeClientBuilder(scheme, cfg).WithObjects(route).Build()
+	cachedRoute := &gatewayv1.HTTPRoute{}
+	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(route), cachedRoute); err != nil {
+		t.Fatal(err)
+	}
+	kubeClient := &conflictOncePatchClient{Client: baseClient, cachedRoute: cachedRoute}
+	provider := &recordingProvider{}
+	reconciler := HTTPRouteReconciler{
+		Client:      kubeClient,
+		APIReader:   baseClient,
+		Provider:    provider,
+		Coordinator: &GraphCoordinator{},
+		Config:      cfg,
+	}
+
+	if err := reconciler.detachRoute(context.Background(), route.DeepCopy()); err != nil {
+		t.Fatalf("detachRoute() error = %v", err)
+	}
+	if len(provider.deletedRoutes) != 1 {
+		t.Fatalf("DeleteRoute calls = %d, want 1", len(provider.deletedRoutes))
+	}
+	if kubeClient.patchCalls != 2 {
+		t.Fatalf("Patch calls = %d, want 2", kubeClient.patchCalls)
+	}
+	current := &gatewayv1.HTTPRoute{}
+	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations["example.com/concurrent"] != "preserve" {
+		t.Fatalf("concurrent annotation = %q, want preserve", current.Annotations["example.com/concurrent"])
+	}
+	if controllerutil.ContainsFinalizer(current, cfg.routeFinalizer()) {
+		t.Fatal("HTTPRoute finalizer was not removed")
+	}
+	if _, present, err := reconciler.storedRouteIdentity(current); err != nil || present {
+		t.Fatalf("storedRouteIdentity() = present %t, error %v; want no stored binding", present, err)
+	}
+}
+
 func TestSetRouteParentStatusesRefetchesCurrentStatus(t *testing.T) {
 	scheme := testScheme(t)
 	cfg := testConfig()
@@ -964,8 +1065,7 @@ func TestSetRouteParentStatusesRefetchesCurrentStatus(t *testing.T) {
 		UID:        "route-uid",
 		Generation: 1,
 	}}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).
 		WithStatusSubresource(&gatewayv1.HTTPRoute{}).
 		WithObjects(route).
 		Build()
@@ -1003,6 +1103,50 @@ func TestSetRouteParentStatusesRefetchesCurrentStatus(t *testing.T) {
 	}
 }
 
+type conflictOncePatchClient struct {
+	client.Client
+	cachedRoute *gatewayv1.HTTPRoute
+	patchCalls  int
+}
+
+func (c *conflictOncePatchClient) Get(
+	ctx context.Context,
+	key client.ObjectKey,
+	object client.Object,
+	options ...client.GetOption,
+) error {
+	route, ok := object.(*gatewayv1.HTTPRoute)
+	if ok && c.cachedRoute != nil && key == client.ObjectKeyFromObject(c.cachedRoute) {
+		candidate := c.cachedRoute.DeepCopy()
+		*route = *candidate
+		return nil
+	}
+	return c.Client.Get(ctx, key, object, options...)
+}
+
+func (c *conflictOncePatchClient) Patch(ctx context.Context, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+	c.patchCalls++
+	if c.patchCalls == 1 {
+		current := &gatewayv1.HTTPRoute{}
+		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(object), current); err != nil {
+			return err
+		}
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations["example.com/concurrent"] = "preserve"
+		if err := c.Client.Update(ctx, current); err != nil {
+			return err
+		}
+		return apierrors.NewConflict(
+			schema.GroupResource{Group: gatewayv1.GroupName, Resource: "httproutes"},
+			object.GetName(),
+			errors.New("injected metadata conflict"),
+		)
+	}
+	return c.Client.Patch(ctx, object, patch, options...)
+}
+
 func portNumberPointer(value gatewayv1.PortNumber) *gatewayv1.PortNumber { return &value }
 
 func TestNodePortMembersHonorsExternalTrafficPolicyLocal(t *testing.T) {
@@ -1021,7 +1165,7 @@ func TestNodePortMembersHonorsExternalTrafficPolicyLocal(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: workerTwo}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.12"}}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}},
 	}
 	objects := append([]client.Object{slice}, nodes...)
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(objects...).Build()
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Config: testConfig()}
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: corev1.ServiceSpec{ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal}}
 	members, err := reconciler.nodePortMembers(context.Background(), service, 30080)
@@ -1036,7 +1180,11 @@ func TestNodePortMembersHonorsExternalTrafficPolicyLocal(t *testing.T) {
 
 func programmedTestGateway(cfg Config) *gatewayv1.Gateway {
 	return &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1,
+			Finalizers:  []string{cfg.gatewayFinalizer()},
+			Annotations: gatewayBindingAnnotations(cfg, "80"),
+		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}},
