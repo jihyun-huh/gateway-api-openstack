@@ -236,7 +236,8 @@ func TestReconcilersShareGatewayGraphCoordinator(t *testing.T) {
 
 	routeDone := make(chan error, 1)
 	go func() {
-		routeDone <- routeReconciler.deleteRoute(context.Background(), route.DeepCopy(), storedRouteIdentity)
+		_, err := routeReconciler.deleteRoute(context.Background(), route.DeepCopy(), storedRouteIdentity)
+		routeDone <- err
 	}()
 	waitForGraphReferences(t, coordinator, types.UID(gatewayUID), 2)
 	select {
@@ -391,7 +392,8 @@ func TestHTTPRouteDeleteRevalidatesBindingAfterWaitingForGraph(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		result <- reconciler.deleteRoute(context.Background(), route.DeepCopy(), stored)
+		_, err := reconciler.deleteRoute(context.Background(), route.DeepCopy(), stored)
+		result <- err
 	}()
 	waitForGraphReferences(t, coordinator, gateway.UID, 2)
 
@@ -460,25 +462,25 @@ func newBlockingGraphProvider() *blockingGraphProvider {
 	}
 }
 
-func (p *blockingGraphProvider) EnsureGateway(context.Context, cloud.GatewaySpec) (cloud.GatewayState, error) {
+func (p *blockingGraphProvider) EnsureGateway(context.Context, cloud.GatewaySpec) (cloud.GatewayResult, error) {
 	close(p.gatewayStarted)
 	<-p.allowGateway
-	return cloud.GatewayState{}, nil
+	return cloud.GatewayReadyResult(cloud.GatewayState{}), nil
 }
 
-func (p *blockingGraphProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayState, bool, error) {
-	return cloud.GatewayState{}, true, nil
+func (p *blockingGraphProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
+	return cloud.GatewayReadyResult(cloud.GatewayState{}), true, nil
 }
 
-func (p *blockingGraphProvider) DeleteGateway(context.Context, cloud.Identity) error {
-	return nil
+func (p *blockingGraphProvider) DeleteGateway(context.Context, cloud.Identity) (cloud.Outcome, error) {
+	return cloud.ReadyOutcome(), nil
 }
 
-func (p *blockingGraphProvider) EnsureRoute(context.Context, cloud.RouteSpec) (cloud.RouteState, error) {
-	return cloud.RouteState{}, nil
+func (p *blockingGraphProvider) EnsureRoute(context.Context, cloud.RouteSpec) (cloud.RouteResult, error) {
+	return cloud.RouteReadyResult(cloud.RouteState{}), nil
 }
 
-func (p *blockingGraphProvider) DeleteRoute(context.Context, cloud.Identity) error {
+func (p *blockingGraphProvider) DeleteRoute(context.Context, cloud.Identity) (cloud.Outcome, error) {
 	p.routeOnce.Do(func() { close(p.routeObserved) })
-	return nil
+	return cloud.ReadyOutcome(), nil
 }

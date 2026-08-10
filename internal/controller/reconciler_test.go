@@ -987,7 +987,7 @@ func TestDetachRouteRejectsStaleGeneration(t *testing.T) {
 	provider := &recordingProvider{}
 	reconciler := HTTPRouteReconciler{Client: kubeClient, Provider: provider, Config: cfg}
 
-	if err := reconciler.detachRoute(context.Background(), staleRoute); !errors.Is(err, errHTTPRouteChanged) {
+	if _, err := reconciler.detachRoute(context.Background(), staleRoute); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("detachRoute() error = %v, want %v", err, errHTTPRouteChanged)
 	}
 	if len(provider.deletedRoutes) != 0 {
@@ -1032,7 +1032,7 @@ func TestDetachRouteDoesNotRepeatCloudDeleteAfterPatchConflict(t *testing.T) {
 		Config:      cfg,
 	}
 
-	if err := reconciler.detachRoute(context.Background(), route.DeepCopy()); err != nil {
+	if _, err := reconciler.detachRoute(context.Background(), route.DeepCopy()); err != nil {
 		t.Fatalf("detachRoute() error = %v", err)
 	}
 	if len(provider.deletedRoutes) != 1 {

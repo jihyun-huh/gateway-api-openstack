@@ -93,8 +93,8 @@ func run(ctx context.Context) error {
 	flag.StringVar(&healthAddress, "health-probe-bind-address", ":8081", "health probe bind address")
 	flag.BoolVar(&leaderElection, "leader-elect", true, "enable leader election")
 	flag.BoolVar(&allowInsecure, "insecure", false, "disable OpenStack TLS verification; test clouds only")
-	flag.DurationVar(&operationTimeout, "openstack-operation-timeout", 10*time.Minute, "maximum wait for one asynchronous Octavia operation")
-	flag.DurationVar(&pollInterval, "openstack-poll-interval", 2*time.Second, "Octavia provisioning-status poll interval")
+	flag.DurationVar(&operationTimeout, "openstack-operation-timeout", 10*time.Minute, "maximum duration of one OpenStack reconciliation call")
+	flag.DurationVar(&pollInterval, "openstack-poll-interval", 2*time.Second, "delay before observing an asynchronous Octavia operation again")
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 

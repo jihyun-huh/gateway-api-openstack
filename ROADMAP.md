@@ -186,10 +186,11 @@ for a level-based desired graph that recovers after process or leader failure.
 ### Failure, drift, and deletion
 
 Provider outcomes will distinguish pending progress, authentication or
-authorization failure, quota exhaustion, rate limiting, retryable service
-failure, terminal validation, and ownership conflict. An OpenStack HTTP
-response code alone is not enough. For example, a `404` may mean safe
-recreation or completed deletion, depending on the observed role and phase.
+authorization failure, quota exhaustion, rate limiting, request timeout,
+retryable service failure, terminal validation, and ownership conflict. An
+OpenStack HTTP response code alone is not enough. For example, a `404` may mean
+safe recreation or completed deletion, depending on the observed role and
+phase.
 
 Tests and reconciliation must cover:
 

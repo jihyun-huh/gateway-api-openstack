@@ -29,6 +29,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/config/clouds"
 	tokensv2 "github.com/gophercloud/gophercloud/v2/openstack/identity/v2/tokens"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 // ClientConfig selects authentication and service endpoints. Credentials are
@@ -51,16 +52,23 @@ type ServiceClients struct {
 
 // NewServiceClients authenticates from a selected clouds.yaml entry when a
 // path is supplied, otherwise from standard OS_* environment variables.
-func NewServiceClients(ctx context.Context, cfg ClientConfig) (ServiceClients, error) {
+func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceClients, retErr error) {
+	defer func() {
+		retErr = classifyOpenStackError(retErr)
+	}()
+
 	if err := ValidateMicroversion(cfg.Microversion); err != nil {
-		return ServiceClients{}, err
+		return ServiceClients{}, cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, err)
 	}
 	authOptions, endpointOptions, tlsConfig, err := authenticationOptions(cfg)
 	if err != nil {
-		return ServiceClients{}, err
+		return ServiceClients{}, cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, err)
 	}
 	if tlsConfig != nil && tlsConfig.InsecureSkipVerify && !cfg.AllowInsecure {
-		return ServiceClients{}, fmt.Errorf("clouds.yaml disables TLS verification; pass --insecure only for an explicitly approved test cloud")
+		return ServiceClients{}, cloud.NewProviderError(
+			cloud.ErrorCategoryTerminalValidation,
+			fmt.Errorf("clouds.yaml disables TLS verification; pass --insecure only for an explicitly approved test cloud"),
+		)
 	}
 	if cfg.AllowInsecure {
 		if tlsConfig == nil {

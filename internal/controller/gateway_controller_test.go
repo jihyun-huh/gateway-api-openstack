@@ -116,7 +116,7 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 	provider := &recordingProvider{}
 	reconciler := &GatewayReconciler{Client: kubeClient, Provider: provider, Config: config}
 
-	err := reconciler.cleanupGateway(context.Background(), client.ObjectKeyFromObject(gateway), "stale-resource-version")
+	_, err := reconciler.cleanupGateway(context.Background(), client.ObjectKeyFromObject(gateway), "stale-resource-version")
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("cleanupGateway() error = %v, want conflict", err)
 	}
