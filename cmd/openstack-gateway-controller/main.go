@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -53,6 +54,18 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	resyncDefault, err := durationEnvOr("GATEWAY_OPENSTACK_RESYNC_INTERVAL", controller.DefaultOpenStackResyncInterval)
+	if err != nil {
+		return err
+	}
+	apiQPSDefault, err := float64EnvOr("GATEWAY_OPENSTACK_API_QPS", openstack.DefaultAPIQPS)
+	if err != nil {
+		return err
+	}
+	apiBurstDefault, err := intEnvOr("GATEWAY_OPENSTACK_API_BURST", openstack.DefaultAPIBurst)
+	if err != nil {
+		return err
+	}
 	var (
 		controllerName    string
 		clusterID         string
@@ -73,6 +86,9 @@ func run(ctx context.Context) error {
 		allowInsecure     bool
 		operationTimeout  time.Duration
 		pollInterval      time.Duration
+		resyncInterval    time.Duration
+		apiQPS            float64
+		apiBurst          int
 	)
 	zapOptions := zap.Options{Development: false}
 	zapOptions.BindFlags(flag.CommandLine)
@@ -95,20 +111,36 @@ func run(ctx context.Context) error {
 	flag.BoolVar(&allowInsecure, "insecure", false, "disable OpenStack TLS verification; test clouds only")
 	flag.DurationVar(&operationTimeout, "openstack-operation-timeout", 10*time.Minute, "maximum duration of one OpenStack reconciliation call")
 	flag.DurationVar(&pollInterval, "openstack-poll-interval", 2*time.Second, "delay before observing an asynchronous Octavia operation again")
+	flag.DurationVar(&resyncInterval, "openstack-resync-interval", resyncDefault, "interval for observing converged OpenStack resources again")
+	flag.Float64Var(&apiQPS, "openstack-api-qps", apiQPSDefault, "maximum average OpenStack API requests per second for this process")
+	flag.IntVar(&apiBurst, "openstack-api-burst", apiBurstDefault, "maximum burst of OpenStack API requests for this process")
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
+	openStackClientConfig := openstack.ClientConfig{
+		Region:         region,
+		Microversion:   microversion,
+		CloudsYAMLPath: cloudsYAML,
+		CloudName:      cloudName,
+		AllowInsecure:  allowInsecure,
+		APIQPS:         apiQPS,
+		APIBurst:       apiBurst,
+	}
+	if err := openStackClientConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid OpenStack client configuration: %w", err)
+	}
 
 	controllerConfig := controller.Config{
-		ControllerName:    gatewayv1.GatewayController(controllerName),
-		ControllerVersion: version,
-		ClusterID:         clusterID,
-		Provider:          provider,
-		VIPSubnetID:       vipSubnetID,
-		ExternalNetworkID: externalNetworkID,
-		MemberSubnetID:    memberSubnetID,
-		MemberMode:        controller.MemberMode(memberMode),
-		NodeAddressType:   corev1.NodeAddressType(nodeAddressType),
-		HealthPath:        healthPath,
+		ControllerName:          gatewayv1.GatewayController(controllerName),
+		ControllerVersion:       version,
+		ClusterID:               clusterID,
+		Provider:                provider,
+		VIPSubnetID:             vipSubnetID,
+		ExternalNetworkID:       externalNetworkID,
+		MemberSubnetID:          memberSubnetID,
+		MemberMode:              controller.MemberMode(memberMode),
+		NodeAddressType:         corev1.NodeAddressType(nodeAddressType),
+		HealthPath:              healthPath,
+		OpenStackResyncInterval: resyncInterval,
 	}
 	if err := controllerConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid controller configuration: %w", err)
@@ -134,13 +166,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create controller manager: %w", err)
 	}
-	serviceClients, err := openstack.NewServiceClients(ctx, openstack.ClientConfig{
-		Region:         region,
-		Microversion:   microversion,
-		CloudsYAMLPath: cloudsYAML,
-		CloudName:      cloudName,
-		AllowInsecure:  allowInsecure,
-	})
+	serviceClients, err := openstack.NewServiceClients(ctx, openStackClientConfig)
 	if err != nil {
 		return err
 	}
@@ -153,6 +179,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("set up controller field indexes: %w", err)
 	}
 	graphCoordinator := &controller.GraphCoordinator{}
+	eventRecorder := manager.GetEventRecorder("gateway-api-openstack-controller")
 	if err := (&controller.GatewayClassReconciler{Client: manager.GetClient(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up GatewayClass controller: %w", err)
 	}
@@ -161,6 +188,7 @@ func run(ctx context.Context) error {
 		Provider:    openStackProvider,
 		Coordinator: graphCoordinator,
 		APIReader:   manager.GetAPIReader(),
+		Recorder:    eventRecorder,
 		Config:      controllerConfig,
 	}
 	if err := gatewayReconciler.SetupWithManager(manager); err != nil {
@@ -171,6 +199,7 @@ func run(ctx context.Context) error {
 		Provider:    openStackProvider,
 		Coordinator: graphCoordinator,
 		APIReader:   manager.GetAPIReader(),
+		Recorder:    eventRecorder,
 		Config:      controllerConfig,
 	}
 	if err := routeReconciler.SetupWithManager(manager); err != nil {
@@ -222,4 +251,40 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func durationEnvOr(name string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return duration, nil
+}
+
+func float64EnvOr(name string, fallback float64) (float64, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func intEnvOr(name string, fallback int) (int, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
 }

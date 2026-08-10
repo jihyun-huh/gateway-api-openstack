@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,14 +31,15 @@ import (
 
 func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 	cfg := Config{
-		ControllerName:  gatewayv1.GatewayController("example.net/gateway-api-openstack"),
-		ClusterID:       "cluster-a",
-		Provider:        "amphora",
-		VIPSubnetID:     "subnet-a",
-		MemberSubnetID:  "member-subnet-a",
-		MemberMode:      MemberModeNodePort,
-		NodeAddressType: corev1.NodeInternalIP,
-		HealthPath:      "/healthz",
+		ControllerName:          gatewayv1.GatewayController("example.net/gateway-api-openstack"),
+		ClusterID:               "cluster-a",
+		Provider:                "amphora",
+		VIPSubnetID:             "subnet-a",
+		MemberSubnetID:          "member-subnet-a",
+		MemberMode:              MemberModeNodePort,
+		NodeAddressType:         corev1.NodeInternalIP,
+		HealthPath:              "/healthz",
+		OpenStackResyncInterval: time.Minute,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -48,6 +50,9 @@ func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 	if got := cfg.routeFinalizer(); got != "example.net/httproute-finalizer-"+cfg.controllerKey() {
 		t.Fatalf("routeFinalizer() = %q", got)
 	}
+	if got := cfg.routeCleanupFailureAnnotation(); got != "example.net/httproute-cleanup-failure-"+cfg.controllerKey() {
+		t.Fatalf("routeCleanupFailureAnnotation() = %q", got)
+	}
 	other := cfg
 	other.ControllerName = "example.net/another-controller"
 	if cfg.gatewayFinalizer() == other.gatewayFinalizer() || cfg.routeGatewayUIDAnnotation() == other.routeGatewayUIDAnnotation() {
@@ -57,14 +62,15 @@ func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 
 func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 	valid := Config{
-		ControllerName:  "example.net/gateway-api-openstack",
-		ClusterID:       "cluster-a",
-		Provider:        "amphora",
-		VIPSubnetID:     "vip-subnet",
-		MemberSubnetID:  "member-subnet",
-		MemberMode:      MemberModeNodePort,
-		NodeAddressType: corev1.NodeInternalIP,
-		HealthPath:      "/healthz",
+		ControllerName:          "example.net/gateway-api-openstack",
+		ClusterID:               "cluster-a",
+		Provider:                "amphora",
+		VIPSubnetID:             "vip-subnet",
+		MemberSubnetID:          "member-subnet",
+		MemberMode:              MemberModeNodePort,
+		NodeAddressType:         corev1.NodeInternalIP,
+		HealthPath:              "/healthz",
+		OpenStackResyncInterval: time.Minute,
 	}
 	tests := []struct {
 		name   string
@@ -74,6 +80,8 @@ func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 		{name: "unverified provider", mutate: func(cfg *Config) { cfg.Provider = "ovn" }},
 		{name: "implicit member mode", mutate: func(cfg *Config) { cfg.MemberMode = "" }},
 		{name: "missing member subnet", mutate: func(cfg *Config) { cfg.MemberSubnetID = "" }},
+		{name: "disabled OpenStack resync", mutate: func(cfg *Config) { cfg.OpenStackResyncInterval = 0 }},
+		{name: "negative OpenStack resync", mutate: func(cfg *Config) { cfg.OpenStackResyncInterval = -time.Minute }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

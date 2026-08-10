@@ -65,7 +65,7 @@ func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (resul
 		return cloud.RouteResult{}, err
 	}
 
-	gateway, found, err := p.observeRouteGateway(ctx, desired.identity, true)
+	gateway, found, err := p.observeRouteGateway(ctx, desired.identity, &desired.spec.GatewayRequirements, true)
 	if err != nil {
 		return cloud.RouteResult{}, fmt.Errorf("observe Gateway for HTTPRoute: %w", err)
 	}
@@ -90,6 +90,18 @@ func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (resul
 		return cloud.RouteResult{}, err
 	}
 	if len(plan) == 0 {
+		outcome, repaired, err := p.repairRouteGatewayAdminState(
+			ctx,
+			desired.identity,
+			desired.spec.GatewayRequirements,
+			gateway,
+		)
+		if err != nil {
+			return cloud.RouteResult{}, err
+		}
+		if repaired {
+			return cloud.RouteResult{State: state, Outcome: outcome}, nil
+		}
 		return cloud.RouteReadyResult(state), nil
 	}
 	if err := p.executeRouteMutation(ctx, desired, plan[0]); err != nil {
@@ -99,6 +111,39 @@ func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (resul
 		State:   state,
 		Outcome: p.progressingOutcome(plan[0].message()),
 	}, nil
+}
+
+func (p *Provider) repairRouteGatewayAdminState(
+	ctx context.Context,
+	identity Identity,
+	gatewayRequirements cloud.GatewayRequirements,
+	gateway routeGatewayObservation,
+) (cloud.Outcome, bool, error) {
+	if gateway.listenerAdminStateUp && gateway.loadBalancerAdminStateUp {
+		return cloud.Outcome{}, false, nil
+	}
+	floatingIPReady, err := p.gatewayFloatingIPReadyForTraffic(
+		ctx,
+		identity,
+		gateway.state.VIPPortID,
+		gatewayRequirements.ExternalNetworkID,
+	)
+	if err != nil {
+		return cloud.Outcome{}, false, err
+	}
+	if !floatingIPReady {
+		return p.progressingOutcome("Waiting for Gateway Floating IP reconciliation before restoring traffic"), true, nil
+	}
+	if !gateway.listenerAdminStateUp {
+		if err := p.enableListener(ctx, gateway.state.ListenerID); err != nil {
+			return cloud.Outcome{}, false, err
+		}
+		return p.progressingOutcome("Enabled Octavia listener after validating the HTTPRoute graph"), true, nil
+	}
+	if err := p.enableLoadBalancer(ctx, gateway.state.LoadBalancerID); err != nil {
+		return cloud.Outcome{}, false, err
+	}
+	return p.progressingOutcome("Enabled Octavia load balancer after validating the HTTPRoute graph"), true, nil
 }
 
 func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error) {
@@ -121,6 +166,15 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 		if _, err := identity.RouteTags(role); err != nil {
 			return invalid(fmt.Errorf("build %s identity tags: %w", role, err))
 		}
+	}
+	if strings.TrimSpace(spec.GatewayRequirements.Provider) == "" {
+		return invalid(errors.New("gateway provider must not be empty"))
+	}
+	if strings.TrimSpace(spec.GatewayRequirements.VIPSubnetID) == "" {
+		return invalid(errors.New("gateway VIP subnet ID must not be empty"))
+	}
+	if spec.GatewayRequirements.ListenerPort < 1 || spec.GatewayRequirements.ListenerPort > 65535 {
+		return invalid(fmt.Errorf("gateway listener port %d is outside 1-65535", spec.GatewayRequirements.ListenerPort))
 	}
 	if len(spec.Members) == 0 {
 		return invalid(errors.New("at least one ready backend member is required"))

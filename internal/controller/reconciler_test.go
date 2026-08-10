@@ -130,8 +130,13 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 	if !result.Requeue || len(provider.gatewaySpecs) != 0 {
 		t.Fatalf("binding checkpoint result = %#v, EnsureGateway calls = %d", result, len(provider.gatewaySpecs))
 	}
-	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+	secondResult, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	wantResync := openStackResyncAfter(reconciler.Config.OpenStackResyncInterval, gateway.UID)
+	if secondResult.RequeueAfter != wantResync {
+		t.Fatalf("second Reconcile() RequeueAfter = %s, want %s", secondResult.RequeueAfter, wantResync)
 	}
 	var got gatewayv1.Gateway
 	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "edge"}, &got); err != nil {
@@ -149,6 +154,20 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 	}
 	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].Provider != "amphora" {
 		t.Fatalf("gateway specs = %#v", provider.gatewaySpecs)
+	}
+	resourceVersion := got.ResourceVersion
+	thirdResult, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("third Reconcile() error = %v", err)
+	}
+	if thirdResult.RequeueAfter != wantResync || len(provider.gatewaySpecs) != 2 {
+		t.Fatalf("third Reconcile() result = %#v, EnsureGateway calls = %d", thirdResult, len(provider.gatewaySpecs))
+	}
+	if err := client.Get(context.Background(), request.NamespacedName, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceVersion != resourceVersion {
+		t.Fatalf("converged resync changed Gateway resourceVersion from %s to %s", resourceVersion, got.ResourceVersion)
 	}
 }
 
@@ -358,7 +377,7 @@ func TestGatewayOpenStackFailurePreservesAttachedRouteCount(t *testing.T) {
 	otherRoute.Name = "wrong-port"
 	otherRoute.Status.Parents[0].ParentRef.Port = &wrongPort
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway, route, otherRoute).WithObjects(class, gateway, route, otherRoute).Build()
-	provider := &recordingProvider{gatewayErr: errors.New("temporary Octavia failure")}
+	provider := &recordingProvider{gatewayErr: cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("temporary Octavia failure"))}
 	reconciler := GatewayReconciler{Client: kubeClient, Provider: provider, Coordinator: &GraphCoordinator{}, APIReader: kubeClient, Config: cfg}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err == nil {
 		t.Fatal("Reconcile() unexpectedly succeeded")
@@ -540,8 +559,13 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	if !result.Requeue || provider.gatewayGets != 0 || len(provider.routeSpecs) != 0 {
 		t.Fatalf("binding checkpoint result = %#v, GetGateway calls = %d, EnsureRoute calls = %d", result, provider.gatewayGets, len(provider.routeSpecs))
 	}
-	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+	secondResult, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	wantResync := openStackResyncAfter(cfg.OpenStackResyncInterval, route.UID)
+	if secondResult.RequeueAfter != wantResync {
+		t.Fatalf("second Reconcile() RequeueAfter = %s, want %s", secondResult.RequeueAfter, wantResync)
 	}
 	if len(provider.routeSpecs) != 1 {
 		var current gatewayv1.HTTPRoute
@@ -549,7 +573,12 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 		t.Fatalf("route specs count = %d, status = %#v", len(provider.routeSpecs), current.Status)
 	}
 	got := provider.routeSpecs[0]
-	if got.PathType != cloud.PathMatchPrefix || got.PathValue != "/api" || len(got.Members) != 1 || got.Members[0] != (cloud.Member{Address: "10.0.0.11", Port: 30080}) {
+	wantGatewayRequirements := cloud.GatewayRequirements{
+		Provider: cfg.Provider, VIPSubnetID: cfg.VIPSubnetID,
+		ExternalNetworkID: cfg.ExternalNetworkID, ListenerPort: 80,
+	}
+	if got.GatewayRequirements != wantGatewayRequirements || got.PathType != cloud.PathMatchPrefix || got.PathValue != "/api" ||
+		len(got.Members) != 1 || got.Members[0] != (cloud.Member{Address: "10.0.0.11", Port: 30080}) {
 		t.Fatalf("route spec = %#v", got)
 	}
 	var reconciled gatewayv1.HTTPRoute
@@ -558,6 +587,20 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	}
 	if reconciled.Annotations[cfg.routeGatewayUIDAnnotation()] != "gateway-uid" {
 		t.Fatalf("stored Gateway UID = %q", reconciled.Annotations[cfg.routeGatewayUIDAnnotation()])
+	}
+	resourceVersion := reconciled.ResourceVersion
+	thirdResult, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("third Reconcile() error = %v", err)
+	}
+	if thirdResult.RequeueAfter != wantResync || len(provider.routeSpecs) != 2 {
+		t.Fatalf("third Reconcile() result = %#v, EnsureRoute calls = %d", thirdResult, len(provider.routeSpecs))
+	}
+	if err := client.Get(context.Background(), request.NamespacedName, &reconciled); err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.ResourceVersion != resourceVersion {
+		t.Fatalf("converged resync changed HTTPRoute resourceVersion from %s to %s", resourceVersion, reconciled.ResourceVersion)
 	}
 }
 

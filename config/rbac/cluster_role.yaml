@@ -65,8 +65,17 @@ rules:
       - patch
       - update
       - watch
+  # controller-runtime leader election still records core Events.
   - apiGroups:
       - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+      - update
+  - apiGroups:
+      - events.k8s.io
     resources:
       - events
     verbs:

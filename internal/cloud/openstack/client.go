@@ -20,6 +20,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -30,6 +32,16 @@ import (
 	tokensv2 "github.com/gophercloud/gophercloud/v2/openstack/identity/v2/tokens"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"golang.org/x/time/rate"
+)
+
+const (
+	// DefaultAPIQPS is the steady request rate shared by Keystone, Octavia,
+	// and Neutron clients in one controller process.
+	DefaultAPIQPS = 10.0
+	// DefaultAPIBurst allows short reconciliation bursts without removing the
+	// steady process level limit.
+	DefaultAPIBurst = 20
 )
 
 // ClientConfig selects authentication and service endpoints. Credentials are
@@ -40,6 +52,22 @@ type ClientConfig struct {
 	CloudsYAMLPath string
 	CloudName      string
 	AllowInsecure  bool
+	APIQPS         float64
+	APIBurst       int
+}
+
+// Validate checks settings that must be safe before authentication starts.
+func (cfg ClientConfig) Validate() error {
+	if err := ValidateMicroversion(cfg.Microversion); err != nil {
+		return err
+	}
+	if cfg.APIQPS <= 0 || math.IsNaN(cfg.APIQPS) || math.IsInf(cfg.APIQPS, 0) {
+		return fmt.Errorf("request rate must be a finite number greater than zero")
+	}
+	if cfg.APIBurst <= 0 {
+		return fmt.Errorf("request burst must be greater than zero")
+	}
+	return nil
 }
 
 // ServiceClients contains the Gophercloud clients shared by the controller
@@ -57,7 +85,7 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 		retErr = classifyOpenStackError(retErr)
 	}()
 
-	if err := ValidateMicroversion(cfg.Microversion); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return ServiceClients{}, cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, err)
 	}
 	authOptions, endpointOptions, tlsConfig, err := authenticationOptions(cfg)
@@ -84,12 +112,8 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 	// the first request. Scoped token authentication and renewable credential
 	// forms retain automatic reauthentication.
 	authOptions.AllowReauth = allowReauthentication(authOptions)
-	var provider *gophercloud.ProviderClient
-	if tlsConfig != nil {
-		provider, err = openstackconfig.NewProviderClient(ctx, authOptions, openstackconfig.WithTLSConfig(tlsConfig))
-	} else {
-		provider, err = openstackconfig.NewProviderClient(ctx, authOptions)
-	}
+	httpClient := newRateLimitedHTTPClient(tlsConfig, cfg.APIQPS, cfg.APIBurst)
+	provider, err := openstackconfig.NewProviderClient(ctx, authOptions, openstackconfig.WithHTTPClient(httpClient))
 	if err != nil {
 		return ServiceClients{}, fmt.Errorf("authenticate to OpenStack: %w", err)
 	}
@@ -114,6 +138,34 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 		Network:      networkClient,
 		ProjectID:    projectID,
 	}, nil
+}
+
+func newRateLimitedHTTPClient(tlsConfig *tls.Config, qps float64, burst int) http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig.Clone()
+	}
+	return http.Client{Transport: &rateLimitedRoundTripper{
+		next:    transport,
+		limiter: rate.NewLimiter(rate.Limit(qps), burst),
+	}}
+}
+
+type rateLimitedRoundTripper struct {
+	next    http.RoundTripper
+	limiter *rate.Limiter
+}
+
+func (t *rateLimitedRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if err := t.limiter.Wait(request.Context()); err != nil {
+		if contextErr := request.Context().Err(); contextErr != nil {
+			err = contextErr
+		} else if _, hasDeadline := request.Context().Deadline(); hasDeadline {
+			err = context.DeadlineExceeded
+		}
+		return nil, fmt.Errorf("wait for OpenStack API request capacity: %w", err)
+	}
+	return t.next.RoundTrip(request)
 }
 
 func authenticatedProjectID(provider *gophercloud.ProviderClient, authOptions gophercloud.AuthOptions) (string, error) {

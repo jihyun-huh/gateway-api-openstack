@@ -31,5 +31,7 @@ func newServiceClients(ctx context.Context, region, microversion string, allowIn
 		Region:        region,
 		Microversion:  microversion,
 		AllowInsecure: allowInsecure,
+		APIQPS:        cloudopenstack.DefaultAPIQPS,
+		APIBurst:      cloudopenstack.DefaultAPIBurst,
 	})
 }

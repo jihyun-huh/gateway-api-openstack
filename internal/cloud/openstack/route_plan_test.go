@@ -94,6 +94,101 @@ func TestBuildRouteEnsurePlanRepairsDisabledMember(t *testing.T) {
 	}
 }
 
+func TestBuildRouteEnsurePlanRecreatesDeletedMember(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	actual.members = nil
+
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatalf("buildRouteEnsurePlan() error = %v", err)
+	}
+	want := routeMutation{
+		kind:     routeMutationCreateMember,
+		parentID: "pool-1",
+		member:   cloud.Member{Address: "10.0.0.10", Port: 30080},
+	}
+	if !reflect.DeepEqual(plan, []routeMutation{want}) {
+		t.Fatalf("route mutations = %#v, want only %#v", plan, want)
+	}
+}
+
+func TestBuildRouteEnsurePlanRecreatesDeletedMonitor(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	actual.monitor = nil
+
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatalf("buildRouteEnsurePlan() error = %v", err)
+	}
+	want := routeMutation{kind: routeMutationCreateMonitor, parentID: "pool-1"}
+	if !reflect.DeepEqual(plan, []routeMutation{want}) {
+		t.Fatalf("route mutations = %#v, want only %#v", plan, want)
+	}
+}
+
+func TestBuildRouteEnsurePlanRecreatesDeletedPolicy(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	actual.policies = nil
+
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatalf("buildRouteEnsurePlan() error = %v", err)
+	}
+	want := routeMutation{
+		kind:     routeMutationCreatePolicy,
+		parentID: "pool-1",
+		policy:   desired.policies[0],
+	}
+	if !reflect.DeepEqual(plan, []routeMutation{want}) {
+		t.Fatalf("route mutations = %#v, want only %#v", plan, want)
+	}
+}
+
+func TestBuildRouteEnsurePlanDisablesPolicyBeforeRecreatingDeletedRule(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	actual.policies[0].rules = nil
+
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatalf("buildRouteEnsurePlan() error = %v", err)
+	}
+	want := []routeMutation{
+		{kind: routeMutationDisablePolicy, id: "policy-1"},
+		{
+			kind:     routeMutationCreateRule,
+			parentID: "policy-1",
+			rule: desiredRule{
+				role:        roleRulePath,
+				ruleType:    l7policies.TypePath,
+				compareType: l7policies.CompareTypeEqual,
+				value:       "/api",
+			},
+		},
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("route mutations = %#v, want %#v", plan, want)
+	}
+}
+
+func TestBuildRouteEnsurePlanDisablesPolicyBeforeRecreatingDeletedPool(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	actual.pool = nil
+	actual.members = nil
+	actual.monitor = nil
+
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatalf("buildRouteEnsurePlan() error = %v", err)
+	}
+	want := []routeMutation{
+		{kind: routeMutationDisablePolicy, id: "policy-1"},
+		{kind: routeMutationCreatePool},
+	}
+	if len(plan) < len(want) || !reflect.DeepEqual(plan[:len(want)], want) {
+		t.Fatalf("first route mutations = %#v, want %#v", plan, want)
+	}
+}
+
 func TestBuildRouteDeletionPlanDisablesPolicyBeforeDeletingRules(t *testing.T) {
 	_, actual := convergedRoutePlanFixture()
 	plan := buildRouteDeletionPlan(actual)

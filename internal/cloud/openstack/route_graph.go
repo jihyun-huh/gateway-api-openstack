@@ -39,8 +39,10 @@ const (
 )
 
 type routeGatewayObservation struct {
-	state   cloud.GatewayState
-	outcome cloud.Outcome
+	state                    cloud.GatewayState
+	outcome                  cloud.Outcome
+	loadBalancerAdminStateUp bool
+	listenerAdminStateUp     bool
 }
 
 type observedRoutePolicy struct {
@@ -64,6 +66,7 @@ type observedRouteGraph struct {
 func (p *Provider) observeRouteGateway(
 	ctx context.Context,
 	identity Identity,
+	requirements *cloud.GatewayRequirements,
 	requireListener bool,
 ) (routeGatewayObservation, bool, error) {
 	loadBalancer, err := p.findGatewayLoadBalancer(ctx, identity)
@@ -93,7 +96,13 @@ func (p *Provider) observeRouteGateway(
 	if !identity.MatchesGateway(loadBalancer.Tags, roleLoadBalancer) {
 		return routeGatewayObservation{}, false, fmt.Errorf("%w: load balancer %s changed immutable identity during observation", cloud.ErrOwnershipConflict, loadBalancer.ID)
 	}
-
+	if requirements != nil && (loadBalancer.Provider != requirements.Provider || loadBalancer.VipSubnetID != requirements.VIPSubnetID) {
+		return routeGatewayObservation{}, false, fmt.Errorf(
+			"%w: load balancer %s does not match the Gateway provider and VIP subnet",
+			cloud.ErrOwnershipConflict,
+			loadBalancer.ID,
+		)
+	}
 	state := cloud.GatewayState{
 		LoadBalancerID: loadBalancer.ID,
 		VIPPortID:      loadBalancer.VipPortID,
@@ -115,8 +124,22 @@ func (p *Provider) observeRouteGateway(
 	if listener.Protocol != string(listeners.ProtocolHTTP) {
 		return routeGatewayObservation{}, false, fmt.Errorf("%w: listener %s has protocol %s", cloud.ErrOwnershipConflict, listener.ID, listener.Protocol)
 	}
+	if requirements != nil && listener.ProtocolPort != requirements.ListenerPort {
+		return routeGatewayObservation{}, false, fmt.Errorf(
+			"%w: listener %s has port %d instead of %d",
+			cloud.ErrOwnershipConflict,
+			listener.ID,
+			listener.ProtocolPort,
+			requirements.ListenerPort,
+		)
+	}
 	state.ListenerID = listener.ID
-	return routeGatewayObservation{state: state, outcome: cloud.ReadyOutcome()}, true, nil
+	return routeGatewayObservation{
+		state:                    state,
+		outcome:                  cloud.ReadyOutcome(),
+		loadBalancerAdminStateUp: loadBalancer.AdminStateUp,
+		listenerAdminStateUp:     listener.AdminStateUp,
+	}, true, nil
 }
 
 func (p *Provider) observeRouteGraph(

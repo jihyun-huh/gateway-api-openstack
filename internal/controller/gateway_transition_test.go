@@ -69,8 +69,9 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if result.RequeueAfter != maximumProviderProgressRequeue {
-		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, maximumProviderProgressRequeue)
+	wantRequeue := providerProgressRequeueAfter(progressing, gateway.UID)
+	if result.RequeueAfter != wantRequeue {
+		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
 	if len(provider.deletedGateways) != 1 {
 		t.Fatalf("DeleteGateway calls = %d, want 1", len(provider.deletedGateways))

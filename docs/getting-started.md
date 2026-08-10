@@ -139,9 +139,25 @@ by the controller binary.
 | Member mode | `GATEWAY_OPENSTACK_MEMBER_MODE` | Must be `NodePort` |
 | Node address | `GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE` | `InternalIP` or `ExternalIP` |
 | Monitor path | `GATEWAY_OPENSTACK_HEALTH_PATH` | Absolute HTTP path. Defaults to `/` |
+| OpenStack resync | `GATEWAY_OPENSTACK_RESYNC_INTERVAL` | Base interval for observing converged resources again. Defaults to `10m` |
+| OpenStack request rate | `GATEWAY_OPENSTACK_API_QPS` | Average request limit shared by Keystone, Octavia, and Neutron. Defaults to `10` per second |
+| OpenStack request burst | `GATEWAY_OPENSTACK_API_BURST` | Short request burst allowed for the process. Defaults to `20` |
 | Cloud name | `OS_CLOUD` | Named entry in `clouds.yaml` |
 | Cloud file | `OS_CLIENT_CONFIG_FILE` | Mounted `/etc/openstack/clouds.yaml` |
 | Region | `OS_REGION_NAME` | Optional override |
+
+The controller uses a 10 minute base interval by default, with each observation
+scheduled between about 8 and 12 minutes. Stable jitter based on the resource
+UID prevents large groups of resources from reaching OpenStack at the same
+time. Set the environment variable or use `--openstack-resync-interval` to
+change the base interval. The command line flag takes precedence, and the value
+must be greater than zero.
+
+Every OpenStack service client in the process shares one request budget. This
+also covers authentication and token renewal, so increasing controller worker
+counts cannot bypass the limit by using another service client. Both request
+settings must be greater than zero. The equivalent command line flags are
+`--openstack-api-qps` and `--openstack-api-burst`.
 
 The base Deployment also sets these binary flags: leader election enabled,
 metrics on `:8080`, probes on `:8081`, and Octavia microversion `2.5`. The

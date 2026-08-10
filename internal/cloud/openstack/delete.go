@@ -44,7 +44,7 @@ func (p *Provider) DeleteRoute(ctx context.Context, value cloud.Identity) (outco
 	if err != nil {
 		return cloud.Outcome{}, err
 	}
-	gateway, found, err := p.observeRouteGateway(ctx, identity, false)
+	gateway, found, err := p.observeRouteGateway(ctx, identity, nil, false)
 	if err != nil {
 		return cloud.Outcome{}, fmt.Errorf("observe Gateway before HTTPRoute deletion: %w", err)
 	}
@@ -172,6 +172,21 @@ type gatewayDeletionStep struct {
 }
 
 type gatewayDeletionPlan []gatewayDeletionStep
+
+func (p gatewayDeletionPlan) hasRouteResources() bool {
+	for _, step := range p {
+		switch step.resource {
+		case gatewayDeletionL7Rule,
+			gatewayDeletionL7Policy,
+			gatewayDeletionMonitor,
+			gatewayDeletionMember,
+			gatewayDeletionPool:
+			return true
+		case gatewayDeletionListener:
+		}
+	}
+	return false
+}
 
 // buildGatewayDeletionPlan validates the complete load balancer graph before
 // returning any work. Steps are ordered so every child is deleted before its

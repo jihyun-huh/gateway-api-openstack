@@ -65,6 +65,214 @@ func TestEnsureRoutePendingReturnsWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestEnsureRouteRepairsAdministrativelyDisabledGatewayAfterGraphValidation(t *testing.T) {
+	tests := []struct {
+		name              string
+		loadBalancerAdmin bool
+		listenerAdmin     bool
+		wantMessage       string
+		wantMutation      string
+	}{
+		{
+			name: "load balancer", loadBalancerAdmin: false, listenerAdmin: true,
+			wantMessage:  "Enabled Octavia load balancer after validating the HTTPRoute graph",
+			wantMutation: "/lbaas/loadbalancers/load-balancer-1",
+		},
+		{
+			name: "listener", loadBalancerAdmin: true, listenerAdmin: false,
+			wantMessage:  "Enabled Octavia listener after validating the HTTPRoute graph",
+			wantMutation: "/lbaas/listeners/listener-1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			handler := convergedRouteGraphHandler(t, requests, identity, test.loadBalancerAdmin, test.listenerAdmin)
+			provider := NewProvider(ServiceClients{
+				LoadBalancer: safetyServiceClient(handler),
+				Network:      safetyServiceClient(routeTransitionEmptyFloatingIPHandler(t, requests)),
+				ProjectID:    "project-a",
+			}, ProviderConfig{PollInterval: 7 * time.Second})
+
+			result, err := provider.EnsureRoute(context.Background(), routeTransitionSpec(identity))
+			if err != nil {
+				t.Fatalf("EnsureRoute() error = %v", err)
+			}
+			if result.Outcome.State != cloud.OutcomeProgressing ||
+				result.Outcome.RequeueAfter != 7*time.Second || result.Outcome.Message != test.wantMessage {
+				t.Fatalf("EnsureRoute() outcome = %#v, want Progressing after 7s", result.Outcome)
+			}
+			if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, []string{test.wantMutation}) {
+				t.Fatalf("mutating requests = %v, want %s", got, test.wantMutation)
+			}
+		})
+	}
+}
+
+func TestEnsureRouteRestoresTrafficInSeparateTransitions(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
+	listenerTags := safetyGatewayTags(t, identity, roleListener)
+	requests := &gatewayTransitionRequests{}
+	loadBalancerAdminState := false
+	listenerAdminState := false
+	graphHandler := convergedRouteGraphHandler(t, requests, identity, true, true)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers":
+			requests.record(request)
+			loadBalancer := gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")
+			loadBalancer["admin_state_up"] = loadBalancerAdminState
+			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{loadBalancer}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
+			requests.record(request)
+			loadBalancer := gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")
+			loadBalancer["admin_state_up"] = loadBalancerAdminState
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": loadBalancer})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
+			requests.record(request)
+			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80,
+				"admin_state_up": listenerAdminState, "tags": listenerTags,
+			}}})
+		case request.Method == http.MethodPut && request.URL.Path == "/lbaas/listeners/listener-1":
+			requests.record(request)
+			if listenerAdminState {
+				t.Fatal("listener was enabled more than once")
+			}
+			listenerAdminState = true
+			safetyWriteJSON(t, w, map[string]any{"listener": map[string]any{"id": "listener-1"}})
+		case request.Method == http.MethodPut && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
+			requests.record(request)
+			if !listenerAdminState {
+				t.Fatal("load balancer was enabled before the listener")
+			}
+			if loadBalancerAdminState {
+				t.Fatal("load balancer was enabled more than once")
+			}
+			loadBalancerAdminState = true
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": map[string]any{"id": "load-balancer-1"}})
+		default:
+			graphHandler.ServeHTTP(w, request)
+		}
+	})
+	networkHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
+			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{map[string]any{
+				"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+				"floating_network_id": "external-network", "floating_ip_address": "198.51.100.10",
+				"description": identity.GatewayDescription(roleFloatingIP),
+			}}})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
+		http.Error(w, "unexpected request", http.StatusNotFound)
+	})
+	provider := NewProvider(ServiceClients{
+		LoadBalancer: safetyServiceClient(handler),
+		Network:      safetyServiceClient(networkHandler),
+		ProjectID:    "project-a",
+	}, ProviderConfig{PollInterval: time.Second})
+	spec := routeTransitionSpec(identity)
+	spec.GatewayRequirements.ExternalNetworkID = "external-network"
+
+	for attempt := 0; attempt < 3; attempt++ {
+		before := len(requests.mutationPaths())
+		result, err := provider.EnsureRoute(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("EnsureRoute() attempt %d error = %v", attempt+1, err)
+		}
+		after := len(requests.mutationPaths())
+		if after-before > 1 {
+			t.Fatalf("EnsureRoute() attempt %d made %d mutations", attempt+1, after-before)
+		}
+		if attempt < 2 && result.Outcome.State != cloud.OutcomeProgressing {
+			t.Fatalf("EnsureRoute() attempt %d outcome = %#v, want Progressing", attempt+1, result.Outcome)
+		}
+		if attempt == 2 && (result.Outcome.State != cloud.OutcomeReady || after != before) {
+			t.Fatalf("EnsureRoute() final outcome = %#v with %d mutations, want Ready with none", result.Outcome, after-before)
+		}
+	}
+	want := []string{"/lbaas/listeners/listener-1", "/lbaas/loadbalancers/load-balancer-1"}
+	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+		t.Fatalf("parent repair order = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureRouteDoesNotRestoreTrafficWithInvalidFloatingIPs(t *testing.T) {
+	tests := []struct {
+		name        string
+		floatingIPs func(Identity) []any
+	}{
+		{
+			name: "foreign ownership",
+			floatingIPs: func(Identity) []any {
+				return []any{map[string]any{
+					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+					"floating_network_id": "external-network", "description": "managed elsewhere",
+				}}
+			},
+		},
+		{
+			name: "duplicate addresses",
+			floatingIPs: func(identity Identity) []any {
+				description := identity.GatewayDescription(roleFloatingIP)
+				return []any{
+					map[string]any{
+						"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+						"floating_network_id": "external-network", "description": description,
+					},
+					map[string]any{
+						"id": "floating-ip-2", "project_id": "project-a", "port_id": "vip-port",
+						"floating_network_id": "external-network", "description": description,
+					},
+				}
+			},
+		},
+		{
+			name: "wrong external network",
+			floatingIPs: func(identity Identity) []any {
+				return []any{map[string]any{
+					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+					"floating_network_id": "other-network", "description": identity.GatewayDescription(roleFloatingIP),
+				}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			networkHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.record(request)
+				if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
+					safetyWriteJSON(t, w, map[string]any{"floatingips": test.floatingIPs(identity)})
+					return
+				}
+				t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
+				http.Error(w, "unexpected request", http.StatusNotFound)
+			})
+			provider := NewProvider(ServiceClients{
+				LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, false, true)),
+				Network:      safetyServiceClient(networkHandler),
+				ProjectID:    "project-a",
+			}, ProviderConfig{})
+			spec := routeTransitionSpec(identity)
+			spec.GatewayRequirements.ExternalNetworkID = "external-network"
+
+			_, err := provider.EnsureRoute(context.Background(), spec)
+			if !errors.Is(err, cloud.ErrOwnershipConflict) {
+				t.Fatalf("EnsureRoute() error = %v, want ownership conflict", err)
+			}
+			if got := requests.mutationPaths(); len(got) != 0 {
+				t.Fatalf("parent repair with invalid Floating IPs = %v, want none", got)
+			}
+		})
+	}
+}
+
 func TestEnsureRouteCreatesOnlyPoolInFirstTransition(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
@@ -85,7 +293,7 @@ func TestEnsureRouteCreatesOnlyPoolInFirstTransition(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, status)})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
 			safetyWriteJSON(t, w, map[string]any{"l7policies": []any{}})
@@ -143,7 +351,7 @@ func TestEnsureRouteChoosesStaleMemberDeterministically(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, status)})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
 			safetyWriteJSON(t, w, map[string]any{"l7policies": []any{}})
@@ -211,7 +419,7 @@ func TestEnsureRouteRepairsDisabledMemberBeforeReportingReady(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools":
 			safetyWriteJSON(t, w, map[string]any{"pools": []any{map[string]any{
@@ -343,7 +551,7 @@ func TestEnsureRouteConvergesWithOneMutationPerCall(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools":
 			items := []any{}
@@ -476,18 +684,18 @@ func TestEnsureRouteValidatesEveryDescendantBeforeMutation(t *testing.T) {
 	poolTags := safetyRouteTags(t, identity, rolePool)
 	memberTags := safetyRouteTags(t, identity, roleMember)
 	requests := &gatewayTransitionRequests{}
+	disabledLoadBalancer := gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")
+	disabledLoadBalancer["admin_state_up"] = false
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests.record(request)
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers":
-			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{
-				gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE"),
-			}})
+			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{disabledLoadBalancer}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
-			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": disabledLoadBalancer})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools":
 			safetyWriteJSON(t, w, map[string]any{"pools": []any{map[string]any{
@@ -524,7 +732,38 @@ func TestEnsureRouteValidatesEveryDescendantBeforeMutation(t *testing.T) {
 		t.Fatalf("EnsureRoute() error = %v, want ownership conflict", err)
 	}
 	if got := requests.mutationPaths(); len(got) != 0 {
-		t.Fatalf("mutations before complete ownership validation = %v, want none", got)
+		t.Fatalf("parent repair before complete HTTPRoute ownership validation = %v, want none", got)
+	}
+}
+
+func TestEnsureRouteDoesNotRepairParentForStaleRouteUID(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	staleIdentity := identity
+	staleIdentity.value.RouteUID = "previous-route-uid"
+	requests := &gatewayTransitionRequests{}
+	baseHandler := convergedRouteGraphHandler(t, requests, identity, false, true)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools" {
+			requests.record(request)
+			safetyWriteJSON(t, w, map[string]any{"pools": []any{map[string]any{
+				"id": "pool-1", "protocol": "HTTP", "lb_algorithm": "ROUND_ROBIN",
+				"admin_state_up": true, "tags": safetyRouteTags(t, staleIdentity, rolePool),
+			}}})
+			return
+		}
+		baseHandler.ServeHTTP(w, request)
+	})
+	provider := NewProvider(ServiceClients{
+		LoadBalancer: safetyServiceClient(handler),
+		ProjectID:    "project-a",
+	}, ProviderConfig{})
+
+	_, err := provider.EnsureRoute(context.Background(), routeTransitionSpec(identity))
+	if !errors.Is(err, cloud.ErrOwnershipConflict) {
+		t.Fatalf("EnsureRoute() error = %v, want ownership conflict", err)
+	}
+	if got := requests.mutationPaths(); len(got) != 0 {
+		t.Fatalf("parent repair for stale HTTPRoute UID = %v, want none", got)
 	}
 }
 
@@ -546,7 +785,7 @@ func TestEnsureRouteRediscoversPoolAfterLostCreateResponse(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools":
 			items := []any{}
@@ -662,7 +901,7 @@ func TestDeleteRouteConvergesInDeterministicOrder(t *testing.T) {
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
-				"id": "listener-1", "protocol": "HTTP", "tags": listenerTags,
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "admin_state_up": true, "tags": listenerTags,
 			}}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
 			items := []any{}
@@ -776,6 +1015,11 @@ func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 			VIPAddress:     "192.0.2.10",
 			ListenerID:     "listener-1",
 		},
+		GatewayRequirements: cloud.GatewayRequirements{
+			Provider:     "amphora",
+			VIPSubnetID:  "vip-subnet",
+			ListenerPort: 80,
+		},
 		MemberSubnetID: "member-subnet",
 		HealthPath:     "/healthz",
 		Hostname:       "api.example.com",
@@ -783,6 +1027,104 @@ func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 		PathValue:      "/api",
 		Members:        []cloud.Member{{Address: "10.0.0.10", Port: 30080}},
 	}
+}
+
+func convergedRouteGraphHandler(
+	t *testing.T,
+	requests *gatewayTransitionRequests,
+	identity Identity,
+	loadBalancerAdminState bool,
+	listenerAdminState bool,
+) http.Handler {
+	t.Helper()
+	loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
+	listenerTags := safetyGatewayTags(t, identity, roleListener)
+	poolTags := safetyRouteTags(t, identity, rolePool)
+	memberTags := safetyRouteTags(t, identity, roleMember)
+	monitorTags := safetyRouteTags(t, identity, roleMonitor)
+	policyTags := safetyRouteTags(t, identity, rolePolicyExact)
+	pathRuleTags := safetyRouteTags(t, identity, roleRulePath)
+	hostRuleTags := safetyRouteTags(t, identity, roleRuleHost)
+	loadBalancer := gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")
+	loadBalancer["admin_state_up"] = loadBalancerAdminState
+
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers":
+			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{loadBalancer}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": loadBalancer})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
+			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
+				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80,
+				"admin_state_up": listenerAdminState, "tags": listenerTags,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools":
+			safetyWriteJSON(t, w, map[string]any{"pools": []any{map[string]any{
+				"id": "pool-1", "protocol": "HTTP", "lb_algorithm": "ROUND_ROBIN",
+				"admin_state_up": true, "tags": poolTags,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/pools/pool-1/members":
+			safetyWriteJSON(t, w, map[string]any{"members": []any{map[string]any{
+				"id": "member-1", "address": "10.0.0.10", "protocol_port": 30080,
+				"subnet_id": "member-subnet", "admin_state_up": true, "tags": memberTags,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/healthmonitors":
+			safetyWriteJSON(t, w, map[string]any{"healthmonitors": []any{map[string]any{
+				"id": "monitor-1", "type": "HTTP", "delay": 10, "timeout": 5,
+				"max_retries": 3, "max_retries_down": 3, "url_path": "/healthz",
+				"http_method": "GET", "expected_codes": "200-399", "admin_state_up": true,
+				"tags": monitorTags,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
+			safetyWriteJSON(t, w, map[string]any{"l7policies": []any{map[string]any{
+				"id": "policy-1", "listener_id": "listener-1", "action": "REDIRECT_TO_POOL",
+				"redirect_pool_id": "pool-1", "position": 1, "admin_state_up": true,
+				"tags": policyTags,
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies/policy-1/rules":
+			safetyWriteJSON(t, w, map[string]any{"rules": []any{
+				map[string]any{
+					"id": "rule-path", "type": "PATH", "compare_type": "EQUAL_TO",
+					"value": "/api", "admin_state_up": true, "tags": pathRuleTags,
+				},
+				map[string]any{
+					"id": "rule-host", "type": "HOST_NAME", "compare_type": "EQUAL_TO",
+					"value": "api.example.com", "admin_state_up": true, "tags": hostRuleTags,
+				},
+			}})
+		case request.Method == http.MethodPut && request.URL.Path == "/lbaas/listeners/listener-1":
+			var body struct {
+				Listener struct {
+					AdminStateUp *bool `json:"admin_state_up"`
+				} `json:"listener"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode listener update: %v", err)
+			}
+			if body.Listener.AdminStateUp == nil || !*body.Listener.AdminStateUp {
+				t.Fatalf("listener update = %#v, want admin_state_up true", body.Listener)
+			}
+			safetyWriteJSON(t, w, map[string]any{"listener": map[string]any{"id": "listener-1"}})
+		case request.Method == http.MethodPut && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
+			var body struct {
+				LoadBalancer struct {
+					AdminStateUp *bool `json:"admin_state_up"`
+				} `json:"loadbalancer"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode load balancer update: %v", err)
+			}
+			if body.LoadBalancer.AdminStateUp == nil || !*body.LoadBalancer.AdminStateUp {
+				t.Fatalf("load balancer update = %#v, want admin_state_up true", body.LoadBalancer)
+			}
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": map[string]any{"id": "load-balancer-1"}})
+		default:
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	})
 }
 
 func routeTransitionEmptyFloatingIPHandler(t *testing.T, requests *gatewayTransitionRequests) http.Handler {

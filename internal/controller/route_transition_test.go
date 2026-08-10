@@ -54,8 +54,9 @@ func TestHTTPRouteDeletionProgressRetainsFinalizersAndBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if result.RequeueAfter != maximumProviderProgressRequeue {
-		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, maximumProviderProgressRequeue)
+	wantRequeue := providerProgressRequeueAfter(provider.deleteOutcome, route.UID)
+	if result.RequeueAfter != wantRequeue {
+		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
 	if len(provider.deletedRoutes) != 1 {
 		t.Fatalf("DeleteRoute calls = %d, want 1", len(provider.deletedRoutes))
