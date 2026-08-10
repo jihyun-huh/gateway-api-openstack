@@ -6,6 +6,7 @@ CONTAINER_TOOL ?= docker
 BINARY_DIR ?= bin
 PROBE_BINARY ?= $(BINARY_DIR)/octavia-capability-probe
 CONTROLLER_BINARY ?= $(BINARY_DIR)/openstack-gateway-controller
+AUDIT_BINARY ?= $(BINARY_DIR)/openstack-gateway-audit
 VERSION ?= dev
 IMAGE ?= openstack-gateway-controller:$(VERSION)
 
@@ -16,12 +17,17 @@ help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: build-controller build-probe ## Build the controller and Phase 0 capability probe.
+build: build-controller build-audit build-probe ## Build all release binaries.
 
 .PHONY: build-controller
 build-controller: ## Build the Phase 1 controller.
 	@mkdir -p $(BINARY_DIR)
 	$(GO) build -buildvcs=false -trimpath -ldflags "-X main.version=$(VERSION)" -o $(CONTROLLER_BINARY) ./cmd/openstack-gateway-controller
+
+.PHONY: build-audit
+build-audit: ## Build the OpenStack ownership audit tool.
+	@mkdir -p $(BINARY_DIR)
+	$(GO) build -buildvcs=false -trimpath -ldflags "-X main.version=$(VERSION)" -o $(AUDIT_BINARY) ./cmd/openstack-gateway-audit
 
 .PHONY: build-probe
 build-probe: ## Build the Phase 0 capability probe.
@@ -83,5 +89,5 @@ release-snapshot: ## Build release artifacts locally without publishing.
 	$(GORELEASER) release --snapshot --clean
 
 .PHONY: clean
-clean: ## Remove local build and probe output.
+clean: ## Remove local build and release output.
 	@rm -rf "$(BINARY_DIR)" "_artifacts" "dist"

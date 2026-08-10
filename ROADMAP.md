@@ -235,10 +235,12 @@ sensitive data. This lets the controller emit the Event once without inventing
 a ParentStatus. The annotation is removed when cleanup makes progress or the
 binding is cleared. Unit tests cover these rules, including redaction of
 provider error details. OpenStack fault tests and the operator recovery
-procedure are still required. The proposed
-[ownership audit contract](docs/design/ownership-audit.md) compares Kubernetes
-ownership records with OpenStack resources discovered in the authenticated
-project without deleting anything.
+procedure still need validation in a disposable Amphora environment. The
+experimental [ownership audit](docs/design/ownership-audit.md) now compares
+Kubernetes ownership records with OpenStack resources discovered in the
+authenticated project without deleting anything. The command and report have
+unit coverage. The documented [operator recovery workflow](docs/operator-recovery.md)
+still needs validation in that environment.
 
 ### Kubernetes and OpenStack API efficiency
 
@@ -316,6 +318,8 @@ and ADR process before Phase 3 begins.
   dependencies.
 - The Phase 1 traffic, restart, deletion, and leak report from an OpenStack
   environment is published with exact environment versions and topology.
+- The blocked finalization and ownership audit workflow is exercised in that
+  environment without removing a finalizer or deleting an unverified resource.
 - A public report identifies the remaining conformance gaps, and the required
   ADRs are public and reviewed.
 
@@ -666,8 +670,8 @@ removal outside the original development environment.
 
 - Publish metrics with bounded label values, alert guidance, dashboards, and
   useful Events.
-- Document troubleshooting, recovery from blocked finalization, orphan audits,
-  and checks to run before uninstalling.
+- Harden and validate the Phase 2 guidance for troubleshooting, recovery from
+  blocked finalization, ownership audits, and checks before uninstalling.
 - Document the minimum required Keystone roles for Octavia, Neutron, and
   Barbican, along with credential rotation and revocation.
 - Complete a threat model, Kubernetes RBAC review, tests that secrets are

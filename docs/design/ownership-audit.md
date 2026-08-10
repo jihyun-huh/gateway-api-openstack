@@ -1,11 +1,15 @@
 # Ownership audit contract
 
-**Status:** Proposed
+**Status:** Proposed contract with an experimental implementation
 
 This document defines the first experimental ownership audit. It is a narrow
 operator recovery tool for Phase 2, not a cleanup API. The command may change
 while the project is pre-alpha. An accepted ADR is still required before the
 command name or report format can be treated as stable.
+
+The command implements this proposed contract for operator testing. See the
+[operator recovery guide](../operator-recovery.md) for the current workflow and
+the limits of the report.
 
 ## Why this is needed
 
@@ -28,10 +32,12 @@ adopts, changes, or deletes an object, and it never removes a finalizer.
 
 ## Observation model
 
-The command reads all Gateways and HTTPRoutes with binding metadata for the
-configured controller. A binding remains relevant while an object is being
-deleted or after its GatewayClass is handed to another controller because this
-controller may still owe cleanup. Unbound objects are ignored.
+The command lists all Gateways and HTTPRoutes, then evaluates objects that have
+this controller's binding metadata or finalizer. A binding remains relevant
+while an object is being deleted or after its GatewayClass is handed to another
+controller because this controller may still owe cleanup. An object that has a
+finalizer but no complete binding is reported as a Kubernetes issue. Objects
+with neither a binding nor this controller's finalizer are ignored.
 
 Incomplete bindings and bindings for another cluster or OpenStack project are
 reported as Kubernetes issues. They are not used as ownership evidence. If any
@@ -55,7 +61,7 @@ action.
 The JSON report uses `formatVersion: v1alpha1`. This value deliberately does
 not choose the project's future API domain. The report contains:
 
-- the generation time, controller name, and cluster ID
+- the generation time, tool version, controller name, and cluster ID
 - an assessment of `complete` or `incomplete`
 - counts for Kubernetes bindings, binding issues, and OpenStack dispositions
 - Kubernetes object references for binding issues and matched findings

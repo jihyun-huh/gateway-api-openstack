@@ -95,6 +95,19 @@ func TestClassifyAuditCandidates(t *testing.T) {
 		}
 	})
 
+	t.Run("role mismatch does not expose tag value", func(t *testing.T) {
+		const privateRole = "private-foreign-role"
+		candidate := auditTestLoadBalancerCandidate(t, identity, "load-balancer-1")
+		candidate.tags = replaceAuditTag(candidate.tags, "role", encode(privateRole))
+		finding := singleClassifiedAuditFinding(t, candidate, nil, scopeTags, identity.OpenStackProjectID)
+		if finding.Disposition != audit.DispositionOwnershipConflict || finding.Reason != auditReasonInvalidIdentity {
+			t.Fatalf("finding = %#v, want role identity conflict", finding)
+		}
+		if strings.Contains(finding.Message, privateRole) {
+			t.Fatalf("finding message exposes role tag: %q", finding.Message)
+		}
+	})
+
 	t.Run("route binding does not account for Gateway root", func(t *testing.T) {
 		routeIdentity := identity
 		routeIdentity.RouteNamespace = "app"

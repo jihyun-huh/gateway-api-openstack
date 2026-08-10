@@ -344,7 +344,7 @@ func auditCandidateRole(resourceType string, tags []string) (string, bool, error
 		valid, routeScoped = role == roleRulePath || role == roleRuleHost, true
 	}
 	if !valid {
-		return "", false, fmt.Errorf("resource role %q does not match its OpenStack type", role)
+		return "", false, fmt.Errorf("resource role does not match its OpenStack type")
 	}
 	return role, routeScoped, nil
 }

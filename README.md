@@ -148,7 +148,11 @@ supported image is published yet.
 
 See [Getting started with the current controller](docs/getting-started.md) for
 prerequisites, configuration, installation, verification, limitations, and the
-safe removal order.
+safe removal order. The repository also includes an experimental, read-only
+ownership audit for comparing stored bindings with OpenStack resources. Do not
+remove a controller finalizer. If finalization is blocked, keep the controller
+and its credentials available and follow the
+[operator recovery guide](docs/operator-recovery.md).
 
 ## Community direction
 

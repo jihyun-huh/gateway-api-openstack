@@ -13,8 +13,9 @@ GoReleaser v2.17.1 builds release bundles for these Linux architectures:
 - `linux/arm64`
 
 Each bundle contains `openstack-gateway-controller`,
-`octavia-capability-probe`, `LICENSE`, `README.md`, and `SECURITY.md`. A release
-also contains a source archive and `checksums.txt` with SHA-256 checksums.
+`openstack-gateway-audit`, `octavia-capability-probe`, `LICENSE`, `README.md`,
+and `SECURITY.md`. A release also contains a source archive and
+`checksums.txt` with SHA-256 checksums.
 
 Controller images, Helm charts, signatures, provenance, and SBOMs remain
 roadmap work. They require an agreed registry, signing identity, and promotion
@@ -45,7 +46,7 @@ tar -tzf dist/gateway-api-openstack_v*_linux_amd64.tar.gz
 (cd dist && shasum -a 256 -c checksums.txt)
 ```
 
-Both binary archives must contain the two expected executables and the three
+Each architecture archive must contain all three executables and the three
 project documents. The source archive and every binary archive must be covered
 by `checksums.txt`.
 
@@ -95,8 +96,8 @@ Before publishing the draft:
 
 1. Compare the tag's commit with the approved release issue target.
 2. Download the assets and verify `checksums.txt` independently.
-3. Extract both architectures and verify the expected binaries and project
-   documents are present.
+3. Extract the archive for each supported architecture and verify that all
+   three binaries and the project documents are present.
 4. Review the generated changelog, pre-alpha warning, compatibility evidence
    and test results for the release, upgrade actions, and known limitations.
 5. Confirm no artifact or release note contains credentials, private cloud
