@@ -7,6 +7,11 @@ BINARY_DIR ?= bin
 PROBE_BINARY ?= $(BINARY_DIR)/octavia-capability-probe
 CONTROLLER_BINARY ?= $(BINARY_DIR)/openstack-gateway-controller
 AUDIT_BINARY ?= $(BINARY_DIR)/openstack-gateway-audit
+SETUP_ENVTEST ?= $(abspath $(BINARY_DIR)/setup-envtest)
+SETUP_ENVTEST_VERSION ?= v0.24.1
+ENVTEST_ASSETS_DIR ?= $(abspath $(BINARY_DIR)/envtest)
+ENVTEST_K8S_VERSION ?= 1.36.2
+ENVTEST_RELEASE_INDEX ?= https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/3311c8d50e5c8a976266e08f1f92f827439bd34a/envtest-releases.yaml
 VERSION ?= dev
 IMAGE ?= openstack-gateway-controller:$(VERSION)
 
@@ -45,6 +50,23 @@ test: ## Run unit tests.
 .PHONY: test-race
 test-race: ## Run unit tests with the race detector.
 	$(GO) test -race ./...
+
+.PHONY: test-envtest
+test-envtest: ## Run controller tests against a real API server and etcd.
+	@test -x "$(SETUP_ENVTEST)" || { printf 'Run make envtest-assets first.\n'; exit 1; }
+	@test "$$($(SETUP_ENVTEST) version)" = "setup-envtest version: $(SETUP_ENVTEST_VERSION)" || { printf 'Run make envtest-assets to install setup-envtest %s.\n' "$(SETUP_ENVTEST_VERSION)"; exit 1; }
+	@set -eu; \
+	assets="$$($(SETUP_ENVTEST) --installed-only --bin-dir "$(ENVTEST_ASSETS_DIR)" --print path use "$(ENVTEST_K8S_VERSION)")"; \
+	gateway_api_module="$$($(GO) list -mod=readonly -m -f '{{.Dir}}' sigs.k8s.io/gateway-api)"; \
+	KUBEBUILDER_ASSETS="$$assets" \
+	GATEWAY_API_CRD_PATH="$$gateway_api_module/config/crd/standard" \
+	$(GO) test -tags=envtest -count=1 -run '^TestControllerEnvtest$$' -timeout=5m ./internal/controller
+
+.PHONY: envtest-assets
+envtest-assets: ## Download the pinned envtest control-plane binaries.
+	@mkdir -p "$(BINARY_DIR)" "$(ENVTEST_ASSETS_DIR)"
+	GOBIN="$(abspath $(BINARY_DIR))" $(GO) install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
+	$(SETUP_ENVTEST) --index "$(ENVTEST_RELEASE_INDEX)" --bin-dir "$(ENVTEST_ASSETS_DIR)" --print path use "$(ENVTEST_K8S_VERSION)"
 
 .PHONY: fmt
 fmt: ## Format Go source files.

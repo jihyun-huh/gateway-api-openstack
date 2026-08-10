@@ -80,3 +80,30 @@ jobs:
 
       - name: Verify release packaging
         run: make release-check release-snapshot
+
+  envtest:
+    name: envtest
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Restore envtest binaries
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/bin/envtest
+          key: ${{ runner.os }}-${{ runner.arch }}-envtest-v1.36.2
+
+      - name: Prepare envtest binaries
+        run: make envtest-assets
+
+      - name: Run controller envtest
+        run: make test-envtest
