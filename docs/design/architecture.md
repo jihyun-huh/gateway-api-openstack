@@ -205,6 +205,20 @@ references, capabilities, and cloud ownership completes before the first cloud
 mutation. Desired graphs and mutation order are stable across map iteration and
 process restart.
 
+The desired administrative state for a managed load balancer and listener is
+enabled. A direct change to either field is drift because it prevents the
+Gateway from serving traffic. When no route resources exist, Gateway
+reconciliation can restore these fields after checking the complete Gateway
+graph. When a route graph exists, Gateway reconciliation leaves the load
+balancer or listener disabled because it cannot identify the HTTPRoute that
+owns those resources. The already bound HTTPRoute performs the repair after it
+has checked the exact Route identity, the complete Route graph, the Amphora
+provider, VIP subnet, listener port, and Floating IP configuration. It enables
+the listener first and the load balancer on a later reconciliation. Changes to
+the provider, subnet, protocol, port, external network, or identity are not
+repaired. The controller reports them as ownership conflicts and stops
+mutation.
+
 Creation follows dependencies:
 
 ```text

@@ -66,9 +66,11 @@ func (p *Provider) EnsureGateway(ctx context.Context, spec cloud.GatewaySpec) (r
 		VIPPortID:      loadBalancer.VipPortID,
 		VIPAddress:     loadBalancer.VipAddress,
 	}
-	if _, err := p.buildGatewayDeletionPlan(ctx, identity, loadBalancer.ID); err != nil {
+	deletionPlan, err := p.buildGatewayDeletionPlan(ctx, identity, loadBalancer.ID)
+	if err != nil {
 		return cloud.GatewayResult{}, fmt.Errorf("validate Gateway graph before mutation: %w", err)
 	}
+	hasRouteResources := deletionPlan.hasRouteResources()
 	observedListener, err := p.findGatewayListener(ctx, identity, spec, loadBalancer.ID)
 	if err != nil {
 		return cloud.GatewayResult{}, err
@@ -92,7 +94,7 @@ func (p *Provider) EnsureGateway(ctx context.Context, spec cloud.GatewaySpec) (r
 			return cloud.GatewayResult{State: state, Outcome: floatingIPOutcome}, nil
 		}
 	}
-	listener, listenerOutcome, err := p.ensureListener(ctx, identity, spec, loadBalancer.ID, observedListener)
+	listener, listenerOutcome, err := p.ensureListener(ctx, identity, spec, loadBalancer.ID, observedListener, !hasRouteResources)
 	if err != nil {
 		return cloud.GatewayResult{}, err
 	}
@@ -100,30 +102,29 @@ func (p *Provider) EnsureGateway(ctx context.Context, spec cloud.GatewaySpec) (r
 		return cloud.GatewayResult{State: state, Outcome: listenerOutcome}, nil
 	}
 	state.ListenerID = listener.ID
+	if !loadBalancer.AdminStateUp {
+		if hasRouteResources {
+			return cloud.GatewayResult{
+				State:   state,
+				Outcome: p.progressingOutcome("Waiting for HTTPRoute validation before enabling the Octavia load balancer"),
+			}, nil
+		}
+		if err := p.enableLoadBalancer(ctx, loadBalancer.ID); err != nil {
+			return cloud.GatewayResult{}, err
+		}
+		return cloud.GatewayResult{State: state, Outcome: p.progressingOutcome("Enabled Octavia load balancer")}, nil
+	}
 	return cloud.GatewayReadyResult(state), nil
 }
 
 func (p *Provider) ensureNoFloatingIP(ctx context.Context, identity Identity, vipPortID string) (cloud.Outcome, error) {
-	pages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: vipPortID}).AllPages(ctx)
+	items, err := p.listGatewayFloatingIPs(ctx, identity, vipPortID)
 	if err != nil {
-		return cloud.Outcome{}, fmt.Errorf("list Floating IPs on VIP port: %w", err)
-	}
-	items, err := floatingips.ExtractFloatingIPs(pages)
-	if err != nil {
-		return cloud.Outcome{}, fmt.Errorf("extract Floating IPs: %w", err)
-	}
-	for _, item := range items {
-		if err := p.validateFloatingIPProject(item.ID, item.ProjectID, item.TenantID); err != nil {
-			return cloud.Outcome{}, err
-		}
-		if !identity.MatchesGatewayDescription(item.Description, roleFloatingIP) {
-			return cloud.Outcome{}, fmt.Errorf("%w: VIP port %s has unmanaged Floating IP %s", cloud.ErrOwnershipConflict, vipPortID, item.ID)
-		}
+		return cloud.Outcome{}, err
 	}
 	if len(items) == 0 {
 		return cloud.ReadyOutcome(), nil
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	if err := floatingips.Delete(ctx, p.clients.Network, items[0].ID).ExtractErr(); err != nil && !isNotFound(err) {
 		return cloud.Outcome{}, fmt.Errorf("delete no-longer-configured Floating IP %s: %w", items[0].ID, err)
 	}
@@ -169,6 +170,15 @@ func (p *Provider) GetGateway(
 	default:
 		return cloud.GatewayResult{}, false, fmt.Errorf("observe Gateway load balancer: unknown internal phase %d", observation.phase)
 	}
+	if err := p.validateLoadBalancerProject(loadBalancer.ID, loadBalancer.ProjectID); err != nil {
+		return cloud.GatewayResult{}, false, err
+	}
+	if !identity.MatchesGateway(loadBalancer.Tags, roleLoadBalancer) {
+		return cloud.GatewayResult{}, false, fmt.Errorf("%w: load balancer %s changed immutable identity during observation", cloud.ErrOwnershipConflict, loadBalancer.ID)
+	}
+	if !loadBalancer.AdminStateUp {
+		return cloud.GatewayProgressingResult("Octavia load balancer is administratively disabled", p.pollInterval), true, nil
+	}
 
 	listener, err := p.findManagedGatewayListener(ctx, identity, loadBalancer.ID)
 	if err != nil {
@@ -177,6 +187,12 @@ func (p *Provider) GetGateway(
 	if listener == nil {
 		return cloud.GatewayProgressingResult("Octavia listener has not been created", p.pollInterval), true, nil
 	}
+	if listener.Protocol != string(listeners.ProtocolHTTP) {
+		return cloud.GatewayResult{}, false, fmt.Errorf("%w: listener %s has protocol %s", cloud.ErrOwnershipConflict, listener.ID, listener.Protocol)
+	}
+	if !listener.AdminStateUp {
+		return cloud.GatewayProgressingResult("Octavia listener is administratively disabled", p.pollInterval), true, nil
+	}
 
 	state := cloud.GatewayState{
 		LoadBalancerID: loadBalancer.ID,
@@ -184,21 +200,11 @@ func (p *Provider) GetGateway(
 		VIPAddress:     loadBalancer.VipAddress,
 		ListenerID:     listener.ID,
 	}
-	floatingIPPages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: loadBalancer.VipPortID}).AllPages(ctx)
+	floatingIPItems, err := p.listGatewayFloatingIPs(ctx, identity, loadBalancer.VipPortID)
 	if err != nil {
-		return cloud.GatewayResult{}, false, fmt.Errorf("list Gateway Floating IPs: %w", err)
-	}
-	floatingIPItems, err := floatingips.ExtractFloatingIPs(floatingIPPages)
-	if err != nil {
-		return cloud.GatewayResult{}, false, fmt.Errorf("extract Gateway Floating IPs: %w", err)
+		return cloud.GatewayResult{}, false, err
 	}
 	for _, item := range floatingIPItems {
-		if err := p.validateFloatingIPProject(item.ID, item.ProjectID, item.TenantID); err != nil {
-			return cloud.GatewayResult{}, false, err
-		}
-		if !identity.MatchesGatewayDescription(item.Description, roleFloatingIP) {
-			return cloud.GatewayResult{}, false, fmt.Errorf("%w: VIP port %s has unmanaged Floating IP %s", cloud.ErrOwnershipConflict, loadBalancer.VipPortID, item.ID)
-		}
 		if state.FloatingIPID != "" {
 			return cloud.GatewayResult{}, false, fmt.Errorf("%w: VIP port %s has multiple managed Floating IPs", cloud.ErrOwnershipConflict, loadBalancer.VipPortID)
 		}
@@ -288,8 +294,18 @@ func (p *Provider) ensureListener(
 	spec cloud.GatewaySpec,
 	loadBalancerID string,
 	observed *listeners.Listener,
+	allowAdminRepair bool,
 ) (*listeners.Listener, cloud.Outcome, error) {
 	if observed != nil {
+		if !observed.AdminStateUp {
+			if !allowAdminRepair {
+				return observed, p.progressingOutcome("Waiting for HTTPRoute validation before enabling the Octavia listener"), nil
+			}
+			if err := p.enableListener(ctx, observed.ID); err != nil {
+				return nil, cloud.Outcome{}, err
+			}
+			return nil, p.progressingOutcome("Enabled Octavia listener"), nil
+		}
 		return observed, cloud.ReadyOutcome(), nil
 	}
 
@@ -372,23 +388,13 @@ func (p *Provider) ensureFloatingIP(
 	networkID string,
 	vipPortID string,
 ) (*floatingips.FloatingIP, cloud.Outcome, error) {
-	pages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: vipPortID}).AllPages(ctx)
+	floatingIPs, err := p.listGatewayFloatingIPs(ctx, identity, vipPortID)
 	if err != nil {
-		return nil, cloud.Outcome{}, fmt.Errorf("list Floating IPs on VIP port: %w", err)
-	}
-	floatingIPs, err := floatingips.ExtractFloatingIPs(pages)
-	if err != nil {
-		return nil, cloud.Outcome{}, fmt.Errorf("extract Floating IPs: %w", err)
+		return nil, cloud.Outcome{}, err
 	}
 	var owned *floatingips.FloatingIP
 	for index := range floatingIPs {
 		fip := &floatingIPs[index]
-		if err := p.validateFloatingIPProject(fip.ID, fip.ProjectID, fip.TenantID); err != nil {
-			return nil, cloud.Outcome{}, err
-		}
-		if !identity.MatchesGatewayDescription(fip.Description, roleFloatingIP) {
-			return nil, cloud.Outcome{}, fmt.Errorf("%w: VIP port %s already has unmanaged Floating IP %s", cloud.ErrOwnershipConflict, vipPortID, fip.ID)
-		}
 		if fip.FloatingNetworkID != networkID {
 			return nil, cloud.Outcome{}, fmt.Errorf("%w: Floating IP %s on VIP port %s belongs to external network %s, not %s", cloud.ErrOwnershipConflict, fip.ID, vipPortID, fip.FloatingNetworkID, networkID)
 		}
@@ -412,6 +418,84 @@ func (p *Provider) ensureFloatingIP(
 		return nil, cloud.Outcome{}, err
 	}
 	return created, p.progressingOutcome("Allocated Floating IP"), nil
+}
+
+func (p *Provider) listGatewayFloatingIPs(
+	ctx context.Context,
+	identity Identity,
+	vipPortID string,
+) ([]floatingips.FloatingIP, error) {
+	pages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: vipPortID}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list Floating IPs on VIP port: %w", err)
+	}
+	items, err := floatingips.ExtractFloatingIPs(pages)
+	if err != nil {
+		return nil, fmt.Errorf("extract Floating IPs: %w", err)
+	}
+	for _, item := range items {
+		if err := p.validateFloatingIPProject(item.ID, item.ProjectID, item.TenantID); err != nil {
+			return nil, err
+		}
+		if !identity.MatchesGatewayDescription(item.Description, roleFloatingIP) {
+			return nil, fmt.Errorf("%w: VIP port %s has unmanaged Floating IP %s", cloud.ErrOwnershipConflict, vipPortID, item.ID)
+		}
+		if item.PortID != "" && item.PortID != vipPortID {
+			return nil, fmt.Errorf("%w: Floating IP %s reports VIP port %s instead of %s", cloud.ErrOwnershipConflict, item.ID, item.PortID, vipPortID)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items, nil
+}
+
+func (p *Provider) gatewayFloatingIPReadyForTraffic(
+	ctx context.Context,
+	identity Identity,
+	vipPortID string,
+	externalNetworkID string,
+) (bool, error) {
+	items, err := p.listGatewayFloatingIPs(ctx, identity, vipPortID)
+	if err != nil {
+		return false, err
+	}
+	if externalNetworkID == "" {
+		return len(items) == 0, nil
+	}
+	if len(items) == 0 {
+		return false, nil
+	}
+	if len(items) > 1 {
+		return false, fmt.Errorf("%w: VIP port %s has multiple managed Floating IPs", cloud.ErrOwnershipConflict, vipPortID)
+	}
+	if items[0].FloatingNetworkID != externalNetworkID {
+		return false, fmt.Errorf(
+			"%w: Floating IP %s on VIP port %s belongs to external network %s, not %s",
+			cloud.ErrOwnershipConflict,
+			items[0].ID,
+			vipPortID,
+			items[0].FloatingNetworkID,
+			externalNetworkID,
+		)
+	}
+	return true, nil
+}
+
+func (p *Provider) enableLoadBalancer(ctx context.Context, loadBalancerID string) error {
+	if _, err := loadbalancers.Update(ctx, p.clients.LoadBalancer, loadBalancerID, loadbalancers.UpdateOpts{
+		AdminStateUp: boolPointer(true),
+	}).Extract(); err != nil {
+		return fmt.Errorf("enable load balancer: %w", classifyOctaviaMutationError(err))
+	}
+	return nil
+}
+
+func (p *Provider) enableListener(ctx context.Context, listenerID string) error {
+	if _, err := listeners.Update(ctx, p.clients.LoadBalancer, listenerID, listeners.UpdateOpts{
+		AdminStateUp: boolPointer(true),
+	}).Extract(); err != nil {
+		return fmt.Errorf("enable listener: %w", classifyOctaviaMutationError(err))
+	}
+	return nil
 }
 
 // Compile the expression once because resource names are normalized on every

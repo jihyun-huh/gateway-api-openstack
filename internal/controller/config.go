@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -35,23 +36,28 @@ const (
 	// MemberModeNodePort sends Octavia traffic to ready Kubernetes Nodes and a
 	// Service NodePort. It is the only backend mode supported in Phase 1.
 	MemberModeNodePort MemberMode = "NodePort"
+
+	// DefaultOpenStackResyncInterval controls how often a converged resource is
+	// observed when no Kubernetes event has changed its desired state.
+	DefaultOpenStackResyncInterval = 10 * time.Minute
 )
 
 var gatewayControllerNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/[A-Za-z0-9/\-._~%!$&'()*+,;=:]+$`)
 
-// Config is the cluster-wide Phase 1 controller configuration.
+// Config is the cluster-wide controller configuration.
 type Config struct {
-	ControllerName     gatewayv1.GatewayController
-	ControllerVersion  string
-	OpenStackProjectID string
-	ClusterID          string
-	Provider           string
-	VIPSubnetID        string
-	ExternalNetworkID  string
-	MemberSubnetID     string
-	MemberMode         MemberMode
-	NodeAddressType    corev1.NodeAddressType
-	HealthPath         string
+	ControllerName          gatewayv1.GatewayController
+	ControllerVersion       string
+	OpenStackProjectID      string
+	ClusterID               string
+	Provider                string
+	VIPSubnetID             string
+	ExternalNetworkID       string
+	MemberSubnetID          string
+	MemberMode              MemberMode
+	NodeAddressType         corev1.NodeAddressType
+	HealthPath              string
+	OpenStackResyncInterval time.Duration
 }
 
 // Validate rejects configuration that could make ownership ambiguous.
@@ -83,6 +89,9 @@ func (c Config) Validate() error {
 	}
 	if !strings.HasPrefix(c.HealthPath, "/") {
 		return fmt.Errorf("health path must begin with '/'")
+	}
+	if c.OpenStackResyncInterval <= 0 {
+		return fmt.Errorf("OpenStack resync interval must be greater than zero")
 	}
 	return nil
 }
@@ -137,6 +146,14 @@ func (c Config) routeClusterIDAnnotation() string {
 }
 func (c Config) routeProjectIDAnnotation() string {
 	return c.domain() + "/route-project-id-" + c.controllerKey()
+}
+
+// routeCleanupFailureAnnotation stores a reason that contains no sensitive data
+// when Gateway API status has no valid parent entry for a cleanup diagnostic.
+// It suppresses duplicate Events and is not part of the OpenStack ownership
+// identity.
+func (c Config) routeCleanupFailureAnnotation() string {
+	return c.domain() + "/httproute-cleanup-failure-" + c.controllerKey()
 }
 
 func (c Config) controllerKey() string {

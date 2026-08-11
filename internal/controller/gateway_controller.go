@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,6 +48,7 @@ type GatewayReconciler struct {
 	Provider    cloud.Provider
 	Coordinator *GraphCoordinator
 	APIReader   client.Reader
+	Recorder    events.EventRecorder
 	Config      Config
 }
 
@@ -69,6 +71,7 @@ func (e *gatewayValidationError) Error() string { return e.message }
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses;httproutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch;update
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("gateway", req.NamespacedName)
 	ctx = log.IntoContext(ctx, logger)
@@ -85,10 +88,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		result, err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
 		if err != nil {
-			logger.Error(err, "Could not clean up OpenStack resources for Gateway")
-			return ctrl.Result{}, err
+			return result, err
 		}
-		if result.Requeue || result.RequeueAfter > 0 {
+		if result.RequeueAfter > 0 {
 			return result, nil
 		}
 		logger.V(1).Info("Cleaned up OpenStack resources for Gateway")
@@ -109,10 +111,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if controllerutil.ContainsFinalizer(&gateway, r.Config.gatewayFinalizer()) {
 			result, err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
 			if err != nil {
-				logger.Error(err, "Could not clean up OpenStack resources for unmanaged Gateway")
-				return ctrl.Result{}, err
+				return result, err
 			}
-			if result.Requeue || result.RequeueAfter > 0 {
+			if result.RequeueAfter > 0 {
 				return result, nil
 			}
 			logger.V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
@@ -140,7 +141,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 	desiredListenerPort := strconv.Itoa(int(gatewayListener.Port))
 	storedListenerPort := gateway.Annotations[r.Config.gatewayListenerPortAnnotation()]
 	if storedListenerPort != "" && storedListenerPort != desiredListenerPort {
-		if err := r.setGatewayOpenStackFailure(ctx, &gateway, gatewayListener, errors.New("listener port changed; replacing the controller-owned OpenStack resource graph")); err != nil {
+		if err := r.setGatewayProgressing(ctx, &gateway, gatewayListener, "Listener port changed; replacing the controller-owned OpenStack resource graph"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
@@ -167,23 +168,21 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if errors.Is(err, errGatewayChanged) {
 			return ctrl.Result{}, err
 		}
-		if statusErr := r.setGatewayOpenStackFailure(ctx, &gateway, gatewayListener, err); statusErr != nil {
-			logger.Error(errors.Join(err, statusErr), "Could not ensure OpenStack resources or update Gateway status")
-			return ctrl.Result{}, errors.Join(err, statusErr)
-		}
-		logger.Error(err, "Could not ensure OpenStack resources for Gateway")
-		return ctrl.Result{}, err
+		return r.handleGatewayProviderFailure(ctx, &gateway, gatewayListener, err)
 	}
 	if gatewayResult.Outcome.State == cloud.OutcomeProgressing {
 		message := providerProgressMessage(gatewayResult.Outcome, "Octavia resources for the Gateway are still progressing")
 		if err := r.setGatewayProgressing(ctx, &gateway, gatewayListener, message); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(gatewayResult.Outcome)}, nil
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(gatewayResult.Outcome, gateway.UID)}, nil
 	}
 	gatewayState := gatewayResult.State
 	logger.V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
-	return ctrl.Result{}, r.setGatewayProgrammed(ctx, &gateway, gatewayListener, gatewayState)
+	if err := r.setGatewayProgrammed(ctx, &gateway, gatewayListener, gatewayState); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: openStackResyncAfter(r.Config.OpenStackResyncInterval, gateway.UID)}, nil
 }
 
 // cleanupGateway converges a previously valid Gateway to no OpenStack
@@ -214,13 +213,14 @@ func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types
 	}
 	outcome, err := r.deleteGateway(ctx, &gateway)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete OpenStack resources for Gateway: %w", err)
+		providerErr := fmt.Errorf("delete OpenStack resources for Gateway: %w", err)
+		return r.handleGatewayDeleteFailure(ctx, &gateway, providerErr)
 	}
 	if err := outcome.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("validate Gateway deletion outcome: %w", err)
 	}
 	if outcome.State == cloud.OutcomeProgressing {
-		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome)}, nil
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome, gateway.UID)}, nil
 	}
 	metadataBase := gateway.DeepCopy()
 	controllerutil.RemoveFinalizer(&gateway, r.Config.gatewayFinalizer())
@@ -536,35 +536,170 @@ func (r *GatewayReconciler) setGatewayFailureReason(ctx context.Context, gateway
 	return r.patchGatewayStatus(ctx, gateway, base)
 }
 
-func (r *GatewayReconciler) setGatewayOpenStackFailure(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, provisioningErr error) error {
-	gatewayReason := gatewayv1.GatewayReasonNoResources
-	listenerReason := gatewayv1.ListenerReasonPending
-	if errors.Is(provisioningErr, cloud.ErrOwnershipConflict) {
-		gatewayReason = gatewayv1.GatewayReasonInvalid
-		listenerReason = gatewayv1.ListenerReasonInvalid
-	}
-	return r.setGatewayProvisioningStatus(ctx, gateway, listener, gatewayReason, listenerReason, provisioningErr.Error())
+func (r *GatewayReconciler) setGatewayProgressing(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, message string) error {
+	return r.setGatewayProvisioningStatus(ctx, gateway, listener, metav1.ConditionFalse, gatewayv1.GatewayReasonNoResources, gatewayv1.ListenerReasonPending, message, true)
 }
 
-func (r *GatewayReconciler) setGatewayProgressing(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, message string) error {
-	return r.setGatewayProvisioningStatus(ctx, gateway, listener, gatewayv1.GatewayReasonNoResources, gatewayv1.ListenerReasonPending, message)
+func (r *GatewayReconciler) handleGatewayProviderFailure(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	listener *gatewayv1.Listener,
+	providerErr error,
+) (ctrl.Result, error) {
+	policy, ok := providerFailurePolicyFor(providerErr)
+	if !ok {
+		return ctrl.Result{}, providerErr
+	}
+	gatewayReason, listenerReason := gatewayProviderFailureReasons(policy.category)
+	programmedGeneration := conditionObservedGeneration(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		gateway.Generation,
+		policy.advancesObservedGeneration,
+	)
+	transitioned := conditionTransitioned(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		policy.conditionStatus,
+		string(gatewayReason),
+		policy.message,
+		programmedGeneration,
+	)
+	if err := r.setGatewayProvisioningStatus(
+		ctx,
+		gateway,
+		listener,
+		policy.conditionStatus,
+		gatewayReason,
+		listenerReason,
+		policy.message,
+		policy.advancesObservedGeneration,
+	); err != nil {
+		return ctrl.Result{}, errors.Join(
+			safeProviderReconcileError(policy, providerErr),
+			fmt.Errorf("publish Gateway provider failure: %w", err),
+		)
+	}
+	if transitioned {
+		recordProviderWarning(r.Recorder, gateway, policy, "EnsureGateway")
+	}
+	return providerFailureResult(policy, providerErr, string(gateway.UID))
+}
+
+func (r *GatewayReconciler) handleGatewayDeleteFailure(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	providerErr error,
+) (ctrl.Result, error) {
+	policy, ok := providerFailurePolicyFor(providerErr)
+	if !ok {
+		return ctrl.Result{}, providerErr
+	}
+	policy = providerCleanupFailurePolicy(policy, "Gateway")
+	gatewayReason, listenerReason := gatewayProviderFailureReasons(policy.category)
+	programmedGeneration := conditionObservedGeneration(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		gateway.Generation,
+		policy.advancesObservedGeneration,
+	)
+	transitioned := conditionTransitioned(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		policy.conditionStatus,
+		string(gatewayReason),
+		policy.message,
+		programmedGeneration,
+	)
+	if err := r.setGatewayCleanupFailure(ctx, gateway, policy, gatewayReason, listenerReason); err != nil {
+		return ctrl.Result{}, errors.Join(
+			safeProviderReconcileError(policy, providerErr),
+			fmt.Errorf("publish Gateway cleanup failure: %w", err),
+		)
+	}
+	if transitioned {
+		recordProviderWarning(r.Recorder, gateway, policy, "DeleteGateway")
+	}
+	return providerFinalizationFailureResult(policy, providerErr, string(gateway.UID))
+}
+
+func gatewayProviderFailureReasons(category cloud.ErrorCategory) (gatewayv1.GatewayConditionReason, gatewayv1.ListenerConditionReason) {
+	switch category {
+	case cloud.ErrorCategoryQuota:
+		return gatewayv1.GatewayReasonNoResources, gatewayv1.ListenerReasonPending
+	case cloud.ErrorCategoryTerminalValidation:
+		return gatewayv1.GatewayReasonInvalid, gatewayv1.ListenerReasonInvalid
+	case cloud.ErrorCategoryResourceFailure:
+		return gatewayv1.GatewayConditionReason("ResourceFailed"), gatewayv1.ListenerConditionReason("ResourceFailed")
+	case cloud.ErrorCategoryOwnershipConflict:
+		return gatewayv1.GatewayConditionReason("OwnershipConflict"), gatewayv1.ListenerConditionReason("OwnershipConflict")
+	default:
+		return gatewayv1.GatewayReasonPending, gatewayv1.ListenerReasonPending
+	}
+}
+
+func (r *GatewayReconciler) setGatewayCleanupFailure(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	policy providerFailurePolicy,
+	gatewayReason gatewayv1.GatewayConditionReason,
+	listenerReason gatewayv1.ListenerConditionReason,
+) error {
+	base := gateway.DeepCopy()
+	programmedGeneration := conditionObservedGeneration(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		gateway.Generation,
+		policy.advancesObservedGeneration,
+	)
+	setCondition(&gateway.Status.Conditions, condition(
+		string(gatewayv1.GatewayConditionProgrammed),
+		policy.conditionStatus,
+		string(gatewayReason),
+		policy.message,
+		programmedGeneration,
+	))
+	for index := range gateway.Status.Listeners {
+		listenerGeneration := conditionObservedGeneration(
+			gateway.Status.Listeners[index].Conditions,
+			string(gatewayv1.ListenerConditionProgrammed),
+			gateway.Generation,
+			policy.advancesObservedGeneration,
+		)
+		setCondition(&gateway.Status.Listeners[index].Conditions, condition(
+			string(gatewayv1.ListenerConditionProgrammed),
+			policy.conditionStatus,
+			string(listenerReason),
+			policy.message,
+			listenerGeneration,
+		))
+	}
+	return r.patchGatewayStatus(ctx, gateway, base)
 }
 
 func (r *GatewayReconciler) setGatewayProvisioningStatus(
 	ctx context.Context,
 	gateway *gatewayv1.Gateway,
 	listener *gatewayv1.Listener,
+	programmed metav1.ConditionStatus,
 	gatewayReason gatewayv1.GatewayConditionReason,
 	listenerReason gatewayv1.ListenerConditionReason,
 	message string,
+	advanceProgrammedGeneration bool,
 ) error {
 	attachedRoutes, err := r.attachedRouteCount(ctx, gateway, listener)
 	if err != nil {
 		return err
 	}
 	base := gateway.DeepCopy()
+	programmedGeneration := conditionObservedGeneration(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+		gateway.Generation,
+		advanceProgrammedGeneration,
+	)
 	setCondition(&gateway.Status.Conditions, condition(string(gatewayv1.GatewayConditionAccepted), metav1.ConditionTrue, string(gatewayv1.GatewayReasonAccepted), "Gateway configuration is accepted", gateway.Generation))
-	setCondition(&gateway.Status.Conditions, condition(string(gatewayv1.GatewayConditionProgrammed), metav1.ConditionFalse, string(gatewayReason), message, gateway.Generation))
+	setCondition(&gateway.Status.Conditions, condition(string(gatewayv1.GatewayConditionProgrammed), programmed, string(gatewayReason), message, programmedGeneration))
 	listenerStatus := gatewayv1.ListenerStatus{
 		Name:           listener.Name,
 		SupportedKinds: supportedHTTPRouteKinds(),
@@ -572,7 +707,13 @@ func (r *GatewayReconciler) setGatewayProvisioningStatus(
 		Conditions:     existingListenerConditions(gateway, listener.Name),
 	}
 	setAcceptedListenerConditions(&listenerStatus.Conditions, gateway.Generation)
-	setCondition(&listenerStatus.Conditions, condition(string(gatewayv1.ListenerConditionProgrammed), metav1.ConditionFalse, string(listenerReason), message, gateway.Generation))
+	listenerProgrammedGeneration := conditionObservedGeneration(
+		listenerStatus.Conditions,
+		string(gatewayv1.ListenerConditionProgrammed),
+		gateway.Generation,
+		advanceProgrammedGeneration,
+	)
+	setCondition(&listenerStatus.Conditions, condition(string(gatewayv1.ListenerConditionProgrammed), programmed, string(listenerReason), message, listenerProgrammedGeneration))
 	gateway.Status.Listeners = []gatewayv1.ListenerStatus{listenerStatus}
 	return r.patchGatewayStatus(ctx, gateway, base)
 }

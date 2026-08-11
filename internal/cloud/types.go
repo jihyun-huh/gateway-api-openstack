@@ -60,6 +60,15 @@ type GatewayState struct {
 	ListenerID        string
 }
 
+// GatewayRequirements contains the immutable Gateway fields and the settings
+// that route reconciliation must verify before it can restore traffic.
+type GatewayRequirements struct {
+	Provider          string
+	VIPSubnetID       string
+	ExternalNetworkID string
+	ListenerPort      int
+}
+
 // Address returns the client-facing address, preferring a Floating IP when
 // one is configured.
 func (s GatewayState) Address() string {
@@ -88,14 +97,15 @@ type Member struct {
 
 // RouteSpec describes the Phase 1 pool and L7 policies owned by one route.
 type RouteSpec struct {
-	Identity       Identity
-	Gateway        GatewayState
-	MemberSubnetID string
-	HealthPath     string
-	Hostname       string
-	PathType       PathMatchType
-	PathValue      string
-	Members        []Member
+	Identity            Identity
+	Gateway             GatewayState
+	GatewayRequirements GatewayRequirements
+	MemberSubnetID      string
+	HealthPath          string
+	Hostname            string
+	PathType            PathMatchType
+	PathValue           string
+	Members             []Member
 }
 
 // RouteState records the OpenStack objects produced for one HTTPRoute.

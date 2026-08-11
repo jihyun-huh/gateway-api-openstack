@@ -185,12 +185,16 @@ for a level-based desired graph that recovers after process or leader failure.
 
 ### Failure, drift, and deletion
 
-Provider outcomes will distinguish pending progress, authentication or
+Provider outcomes distinguish pending progress, authentication or
 authorization failure, quota exhaustion, rate limiting, request timeout,
-retryable service failure, terminal validation, and ownership conflict. An
-OpenStack HTTP response code alone is not enough. For example, a `404` may mean
-safe recreation or completed deletion, depending on the observed role and
-phase.
+retryable service failure, terminal validation, resource failure, and
+ownership conflict. The controller returns transient failures to the workqueue
+for backoff. Failures that need operator action use a slower retry interval
+with jitter, while ownership conflicts are checked less often. The `status`
+field and Events use fixed messages rather than OpenStack response bodies. An
+OpenStack HTTP response code alone is not enough. For example, a `404` may
+mean safe recreation or completed deletion, depending on the observed role
+and phase.
 
 Tests and reconciliation must cover:
 
@@ -205,10 +209,36 @@ Tests and reconciliation must cover:
 - identity loss or collision, which must stop mutation rather than trigger
   adoption or destructive repair
 
-Failures during finalization will produce stable conditions and Events. The
-operator recovery procedure will be documented. A read-only orphan audit will
-compare Kubernetes ownership records with OpenStack resources discovered in
-the authenticated project without deleting anything.
+After a Gateway or HTTPRoute converges, the controller observes its OpenStack
+resources again on a configurable slow interval. Stable, bounded jitter derived
+from the Kubernetes resource UID spreads these observations over time. The same
+scheduling rule applies to Octavia resources that are still progressing.
+Kubernetes watches remain responsible for changes to desired state; periodic
+observation finds changes made directly in OpenStack.
+
+The OpenStack adapter recreates missing listeners, pools, members, and health
+monitors after it verifies the remaining graph. It also enables a managed load
+balancer or listener when its administrative state is changed outside the
+controller. If route resources are present, the bound HTTPRoute first verifies
+its exact identity, the complete Route graph, and the Gateway's provider,
+subnet, listener, and Floating IP configuration. It then enables the listener
+and load balancer in separate reconciliations. Gateway reconciliation performs
+the repair directly only when there are no route resources. Adapter tests cover
+these repairs. Fault injection in an OpenStack environment remains part of the
+Phase 2 exit evidence.
+
+Failures during finalization keep the finalizer and stored binding. The
+controller records a stable condition and emits an Event when the condition
+changes. If an HTTPRoute no longer has a valid parent status entry, an
+annotation owned by this controller stores a cleanup reason that contains no
+sensitive data. This lets the controller emit the Event once without inventing
+a ParentStatus. The annotation is removed when cleanup makes progress or the
+binding is cleared. Unit tests cover these rules, including redaction of
+provider error details. OpenStack fault tests and the operator recovery
+procedure are still required. A
+read-only orphan audit will compare Kubernetes ownership records with
+OpenStack resources discovered in the authenticated project without deleting
+anything.
 
 ### Kubernetes and OpenStack API efficiency
 
@@ -218,10 +248,12 @@ EndpointSlice. Watch handlers will use indexed reads instead of listing every
 object. Node changes will enqueue only affected managed NodePort backends, and
 the controller will coalesce event bursts into one update to the member set.
 
-The controller will reuse shared OpenStack clients and keep Amphora capability
-data in a bounded cache. Changes to credentials, endpoint, region, project, or
-token validity invalidate the relevant entries. Configure client rate limits,
-pagination, and timeouts before increasing concurrency.
+The controller reuses shared OpenStack clients. Keystone, Octavia, and Neutron
+requests use one configurable rate limit for the controller process. Bounded
+contexts limit provider operations, and adapter list calls consume every page.
+The reconcile path does not perform capability discovery, so it has no
+capability result to cache. Increase worker concurrency only after race and
+scale tests show that it improves throughput without overwhelming OpenStack.
 
 ### Conformance feasibility and design gates
 

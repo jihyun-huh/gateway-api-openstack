@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -109,16 +110,17 @@ func (p *recordingProvider) DeleteRoute(_ context.Context, identity cloud.Identi
 
 func testConfig() Config {
 	return Config{
-		ControllerName:     "example.com/gateway-api-openstack",
-		ControllerVersion:  "test",
-		OpenStackProjectID: "project-a",
-		ClusterID:          "cluster-a",
-		Provider:           "amphora",
-		VIPSubnetID:        "vip-subnet",
-		MemberSubnetID:     "member-subnet",
-		MemberMode:         MemberModeNodePort,
-		NodeAddressType:    corev1.NodeInternalIP,
-		HealthPath:         "/",
+		ControllerName:          "example.com/gateway-api-openstack",
+		ControllerVersion:       "test",
+		OpenStackProjectID:      "project-a",
+		ClusterID:               "cluster-a",
+		Provider:                "amphora",
+		VIPSubnetID:             "vip-subnet",
+		MemberSubnetID:          "member-subnet",
+		MemberMode:              MemberModeNodePort,
+		NodeAddressType:         corev1.NodeInternalIP,
+		HealthPath:              "/",
+		OpenStackResyncInterval: time.Minute,
 	}
 }
 

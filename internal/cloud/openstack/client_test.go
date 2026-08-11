@@ -18,13 +18,17 @@ package openstack
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"math"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gophercloud/gophercloud/v2"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"golang.org/x/time/rate"
 )
 
 func TestAuthenticatedProjectIDFallsBackToExplicitTenantID(t *testing.T) {
@@ -42,9 +46,90 @@ func TestAuthenticatedProjectIDFallsBackToExplicitTenantID(t *testing.T) {
 }
 
 func TestNewServiceClientsClassifiesInvalidConfiguration(t *testing.T) {
-	_, err := NewServiceClients(context.Background(), ClientConfig{Microversion: "2.4"})
+	_, err := NewServiceClients(context.Background(), ClientConfig{
+		Microversion: "2.4",
+		APIQPS:       DefaultAPIQPS,
+		APIBurst:     DefaultAPIBurst,
+	})
 	if !errors.Is(err, cloud.ErrTerminalValidation) {
 		t.Fatalf("NewServiceClients() error = %v, want terminal validation category", err)
+	}
+}
+
+func TestClientConfigValidatesRequestLimits(t *testing.T) {
+	valid := ClientConfig{Microversion: "2.5", APIQPS: DefaultAPIQPS, APIBurst: DefaultAPIBurst}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("ClientConfig.Validate() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ClientConfig)
+	}{
+		{name: "zero QPS", mutate: func(cfg *ClientConfig) { cfg.APIQPS = 0 }},
+		{name: "negative QPS", mutate: func(cfg *ClientConfig) { cfg.APIQPS = -1 }},
+		{name: "NaN QPS", mutate: func(cfg *ClientConfig) { cfg.APIQPS = math.NaN() }},
+		{name: "infinite QPS", mutate: func(cfg *ClientConfig) { cfg.APIQPS = math.Inf(1) }},
+		{name: "zero burst", mutate: func(cfg *ClientConfig) { cfg.APIBurst = 0 }},
+		{name: "negative burst", mutate: func(cfg *ClientConfig) { cfg.APIBurst = -1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := valid
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("ClientConfig.Validate() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestRateLimitedHTTPClientPreservesTLSConfig(t *testing.T) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: "identity.example.test"}
+	client := newRateLimitedHTTPClient(tlsConfig, DefaultAPIQPS, DefaultAPIBurst)
+	limited, ok := client.Transport.(*rateLimitedRoundTripper)
+	if !ok {
+		t.Fatalf("HTTP transport = %T, want rateLimitedRoundTripper", client.Transport)
+	}
+	transport, ok := limited.next.(*http.Transport)
+	if !ok {
+		t.Fatalf("wrapped transport = %T, want http.Transport", limited.next)
+	}
+	if transport.TLSClientConfig == tlsConfig {
+		t.Fatal("HTTP transport retained the caller's mutable TLS config")
+	}
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS13 ||
+		transport.TLSClientConfig.ServerName != "identity.example.test" {
+		t.Fatalf("HTTP transport TLS config = %#v", transport.TLSClientConfig)
+	}
+}
+
+func TestRateLimitedRoundTripperHonorsRequestDeadline(t *testing.T) {
+	requestCount := 0
+	transport := &rateLimitedRoundTripper{
+		limiter: rate.NewLimiter(0, 1),
+		next: safetyRoundTripper(func(*http.Request) (*http.Response, error) {
+			requestCount++
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody}, nil
+		}),
+	}
+	first, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://openstack.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.RoundTrip(first); err != nil {
+		t.Fatalf("first RoundTrip() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	second, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openstack.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.RoundTrip(second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second RoundTrip() error = %v, want context deadline exceeded", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("wrapped transport requests = %d, want 1", requestCount)
 	}
 }
 

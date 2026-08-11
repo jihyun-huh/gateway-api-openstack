@@ -17,6 +17,11 @@ data:
   GATEWAY_OPENSTACK_MEMBER_MODE: NodePort
   GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE: InternalIP
   GATEWAY_OPENSTACK_HEALTH_PATH: "/"
+  # Base interval for observing converged OpenStack resources again.
+  GATEWAY_OPENSTACK_RESYNC_INTERVAL: 10m
+  # One shared request budget covers Keystone, Octavia, and Neutron.
+  GATEWAY_OPENSTACK_API_QPS: "10"
+  GATEWAY_OPENSTACK_API_BURST: "20"
   # The mounted clouds.yaml must contain an entry with this name.
   OS_CLOUD: openstack
   OS_CLIENT_CONFIG_FILE: /etc/openstack/clouds.yaml

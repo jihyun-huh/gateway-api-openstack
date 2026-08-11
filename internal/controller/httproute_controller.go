@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -106,6 +107,7 @@ type HTTPRouteReconciler struct {
 	Provider    cloud.Provider
 	Coordinator *GraphCoordinator
 	APIReader   client.Reader
+	Recorder    events.EventRecorder
 	Config      Config
 }
 
@@ -115,6 +117,7 @@ type HTTPRouteReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;gatewayclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services;nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch;update
 func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("httpRoute", req.NamespacedName)
 	ctx = log.IntoContext(ctx, logger)
@@ -169,9 +172,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	detachResult, err := r.detachPreviousGateway(ctx, httpRoute, parent.gateway)
 	if err != nil {
-		statusErr := r.setRouteParentStatuses(ctx, httpRoute, []parentStatusUpdate{{parent: parent.ref, status: failedRouteStatus(err.Error())}})
-		logger.Error(errors.Join(err, statusErr), "Could not detach HTTPRoute from previous Gateway")
-		return ctrl.Result{}, errors.Join(err, statusErr)
+		return r.handleRouteProviderFailure(ctx, httpRoute, parent.ref, false, err, "DeleteHTTPRoute")
 	}
 	if detachResult.RequeueAfter > 0 {
 		status := pendingRouteStatus("OpenStack resources for the previous Gateway are being removed")
@@ -191,12 +192,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if errors.Is(err, errHTTPRouteChanged) {
 			return ctrl.Result{}, err
 		}
-		statusErr := r.setRouteParentStatuses(ctx, httpRoute, []parentStatusUpdate{{parent: parent.ref, status: failedRouteStatus(err.Error())}})
-		logger.Error(errors.Join(err, statusErr), "Could not reconcile OpenStack resources for HTTPRoute")
-		if statusErr != nil {
-			return ctrl.Result{}, errors.Join(err, statusErr)
-		}
-		return ctrl.Result{}, err
+		return r.handleRouteProviderFailure(ctx, httpRoute, parent.ref, true, err, "EnsureHTTPRoute")
 	}
 	if graphResult.bindingRequired {
 		if _, err := r.bindRoute(ctx, httpRoute, parent.gateway); err != nil {
@@ -210,7 +206,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.setRouteParentStatuses(ctx, httpRoute, []parentStatusUpdate{{parent: parent.ref, status: status}}); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(graphResult.outcome)}, nil
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(graphResult.outcome, httpRoute.UID)}, nil
 	}
 	if graphResult.outcome.State != cloud.OutcomeReady {
 		status := pendingRouteStatus("Controller-owned Octavia load balancer or listener is not ready")
@@ -223,7 +219,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 	logger.V(1).Info("Programmed HTTPRoute", "gateway", client.ObjectKeyFromObject(parent.gateway))
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: openStackResyncAfter(r.Config.OpenStackResyncInterval, httpRoute.UID)}, nil
 }
 
 func (r *HTTPRouteReconciler) ensureRouteGraph(
@@ -231,6 +227,9 @@ func (r *HTTPRouteReconciler) ensureRouteGraph(
 	expectedRoute *gatewayv1.HTTPRoute,
 	expectedGateway *gatewayv1.Gateway,
 ) (routeGraphResult, error) {
+	if r.APIReader == nil {
+		return routeGraphResult{}, errAPIReaderRequired
+	}
 	release, err := acquireGatewayGraph(ctx, r.Coordinator, string(expectedGateway.UID))
 	if err != nil {
 		return routeGraphResult{}, fmt.Errorf("acquire Gateway graph: %w", err)
@@ -238,7 +237,7 @@ func (r *HTTPRouteReconciler) ensureRouteGraph(
 	defer release()
 
 	var route gatewayv1.HTTPRoute
-	if err := r.Get(ctx, client.ObjectKeyFromObject(expectedRoute), &route); err != nil {
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expectedRoute), &route); err != nil {
 		return routeGraphResult{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
 	if !sameHTTPRouteRevision(&route, expectedRoute.UID, expectedRoute.Generation, false) {
@@ -246,14 +245,14 @@ func (r *HTTPRouteReconciler) ensureRouteGraph(
 	}
 
 	var gateway gatewayv1.Gateway
-	if err := r.Get(ctx, client.ObjectKeyFromObject(expectedGateway), &gateway); err != nil {
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expectedGateway), &gateway); err != nil {
 		return routeGraphResult{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
 	if gateway.UID != expectedGateway.UID || gateway.Generation != expectedGateway.Generation || !gateway.DeletionTimestamp.IsZero() {
 		return routeGraphResult{}, errHTTPRouteChanged
 	}
 	var gatewayClass gatewayv1.GatewayClass
-	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gatewayClass); err != nil {
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gatewayClass); err != nil {
 		return routeGraphResult{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
 	if gatewayClass.Spec.ControllerName != r.Config.ControllerName || gatewayClass.Spec.ParametersRef != nil || len(route.Spec.ParentRefs) != 1 {
@@ -266,9 +265,9 @@ func (r *HTTPRouteReconciler) ensureRouteGraph(
 		return routeGraphResult{}, errHTTPRouteChanged
 	}
 
-	listener := (*gatewayv1.Listener)(nil)
-	if len(gateway.Spec.Listeners) == 1 {
-		listener = &gateway.Spec.Listeners[0]
+	listener, validationErr := validateGateway(&gateway)
+	if validationErr != nil {
+		return routeGraphResult{}, nil
 	}
 	parent := managedRouteParent{ref: route.Spec.ParentRefs[0], gateway: &gateway, listener: listener}
 	if err := validateRouteParent(&route, parent); err != nil {
@@ -297,8 +296,16 @@ func (r *HTTPRouteReconciler) ensureRouteGraph(
 	if err != nil {
 		return routeGraphResult{}, err
 	}
+	storedIdentity, bindingPresent, err := r.storedRouteIdentity(&route)
+	if err != nil {
+		return routeGraphResult{}, err
+	}
+	boundToCurrentGateway := bindingPresent &&
+		storedIdentity == routeIdentity(r.Config, &gateway, &route) &&
+		controllerutil.ContainsFinalizer(&route, r.Config.routeFinalizer())
 	programmed := meta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
-	if programmed == nil || programmed.Status != metav1.ConditionTrue || programmed.ObservedGeneration != gateway.Generation {
+	if (programmed == nil || programmed.Status != metav1.ConditionTrue || programmed.ObservedGeneration != gateway.Generation) &&
+		!boundToCurrentGateway {
 		return routeGraphResult{}, nil
 	}
 	desiredBinding := route.DeepCopy()
@@ -322,12 +329,83 @@ func (r *HTTPRouteReconciler) setRouteStatusesAndDetach(
 	route *gatewayv1.HTTPRoute,
 	updates []parentStatusUpdate,
 ) (ctrl.Result, error) {
-	statusErr := r.setRouteParentStatuses(ctx, route, updates)
-	result, cleanupErr := r.detachRoute(ctx, route)
-	if err := errors.Join(statusErr, cleanupErr); err != nil {
-		return ctrl.Result{}, err
+	providerStatusPublished := routeHasProviderFailureStatus(route, updates, r.Config.ControllerName, r.Config.domain()+"/Programmed")
+	var statusErr error
+	if !providerStatusPublished {
+		statusErr = r.setRouteParentStatuses(ctx, route, updates)
 	}
-	return result, nil
+	result, cleanupErr := r.detachRoute(ctx, route)
+	if cleanupErr == nil {
+		if providerStatusPublished {
+			statusErr = r.setRouteParentStatuses(ctx, route, updates)
+		}
+		if statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return result, nil
+	}
+	policy, ok := providerFailurePolicyFor(cleanupErr)
+	if !ok {
+		return ctrl.Result{}, errors.Join(statusErr, cleanupErr)
+	}
+	policy = providerCleanupFailurePolicy(policy, "HTTPRoute")
+	diagnosticTransitioned, diagnosticErr := r.setRouteCleanupFailure(ctx, route, policy.reason)
+	providerUpdates := routeProviderFailureUpdates(updates, policy)
+	var providerStatusErr error
+	if len(providerUpdates) == 0 {
+		providerStatusErr = r.setRouteParentStatuses(ctx, route, nil)
+	} else {
+		_, providerStatusErr = r.setRouteProviderFailureStatuses(ctx, route, providerUpdates, policy, true)
+	}
+	if statusErr != nil || diagnosticErr != nil || providerStatusErr != nil {
+		return ctrl.Result{}, errors.Join(statusErr, diagnosticErr, providerStatusErr, safeProviderReconcileError(policy, cleanupErr))
+	}
+	if diagnosticTransitioned {
+		recordProviderWarning(r.Recorder, route, policy, "DeleteHTTPRoute")
+	}
+	return providerFinalizationFailureResult(policy, cleanupErr, string(route.UID))
+}
+
+func routeHasProviderFailureStatus(
+	route *gatewayv1.HTTPRoute,
+	updates []parentStatusUpdate,
+	controllerName gatewayv1.GatewayController,
+	conditionType string,
+) bool {
+	for _, update := range updates {
+		for _, parent := range route.Status.Parents {
+			if parent.ControllerName != controllerName || !parentRefsEqual(parent.ParentRef, route.Namespace, update.parent, route.Namespace) {
+				continue
+			}
+			programmed := meta.FindStatusCondition(parent.Conditions, conditionType)
+			if programmed != nil && isProviderFailureReason(programmed.Reason) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isProviderFailureReason(reason string) bool {
+	switch reason {
+	case providerReasonAuthenticationFailed, providerReasonAuthorizationFailed, providerReasonQuotaExceeded,
+		providerReasonRateLimited, providerReasonRequestTimedOut, providerReasonUnavailable,
+		providerReasonInvalidConfiguration, providerReasonResourceFailed, providerReasonOwnershipConflict:
+		return true
+	default:
+		return false
+	}
+}
+
+func routeProviderFailureUpdates(updates []parentStatusUpdate, policy providerFailurePolicy) []parentStatusUpdate {
+	result := make([]parentStatusUpdate, len(updates))
+	for index := range updates {
+		result[index] = updates[index]
+		result[index].status.programmed = policy.conditionStatus
+		result[index].status.programmedReason = policy.reason
+		result[index].status.programmedMessage = policy.message
+	}
+	return result
 }
 
 func (r *HTTPRouteReconciler) detachPreviousGateway(
@@ -603,7 +681,13 @@ func (r *HTTPRouteReconciler) buildRouteSpec(ctx context.Context, route *gateway
 		return cloud.RouteSpec{}, err
 	}
 	return cloud.RouteSpec{
-		Identity:       routeIdentity(r.Config, gateway, route),
+		Identity: routeIdentity(r.Config, gateway, route),
+		GatewayRequirements: cloud.GatewayRequirements{
+			Provider:          r.Config.Provider,
+			VIPSubnetID:       r.Config.VIPSubnetID,
+			ExternalNetworkID: r.Config.ExternalNetworkID,
+			ListenerPort:      int(gateway.Spec.Listeners[0].Port),
+		},
 		MemberSubnetID: r.Config.MemberSubnetID,
 		HealthPath:     r.Config.HealthPath,
 		Hostname:       hostname,
@@ -832,7 +916,11 @@ func (r *HTTPRouteReconciler) detachRoute(ctx context.Context, route *gatewayv1.
 			return ctrl.Result{}, fmt.Errorf("validate detached HTTPRoute deletion outcome: %w", err)
 		}
 		if outcome.State == cloud.OutcomeProgressing {
-			return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome)}, nil
+			if err := r.clearRouteCleanupFailure(ctx, current); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clear HTTPRoute cleanup failure checkpoint: %w", err)
+			}
+			*route = *current
+			return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome, current.UID)}, nil
 		}
 		log.FromContext(ctx).V(1).Info("Deleted detached HTTPRoute resources", "gateway", types.NamespacedName{Namespace: stored.GatewayNamespace, Name: stored.GatewayName})
 	}
@@ -866,13 +954,18 @@ func (r *HTTPRouteReconciler) finalizeRoute(ctx context.Context, route *gatewayv
 	}
 	outcome, err := r.deleteRoute(ctx, current, stored)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete HTTPRoute resources during finalization: %w", err)
+		providerErr := fmt.Errorf("delete HTTPRoute resources during finalization: %w", err)
+		return r.handleRouteFinalizationFailure(ctx, current, stored, providerErr)
 	}
 	if err := outcome.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("validate HTTPRoute finalization outcome: %w", err)
 	}
 	if outcome.State == cloud.OutcomeProgressing {
-		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome)}, nil
+		if err := r.clearRouteCleanupFailure(ctx, current); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear HTTPRoute cleanup failure checkpoint: %w", err)
+		}
+		*route = *current
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome, current.UID)}, nil
 	}
 	log.FromContext(ctx).V(1).Info("Deleted HTTPRoute resources during finalization", "gateway", types.NamespacedName{Namespace: stored.GatewayNamespace, Name: stored.GatewayName})
 	if err := r.clearStoredRouteBinding(ctx, route, stored, true); err != nil {
@@ -957,6 +1050,61 @@ func (r *HTTPRouteReconciler) clearStoredRouteBinding(
 	})
 }
 
+func (r *HTTPRouteReconciler) setRouteCleanupFailure(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	reason string,
+) (bool, error) {
+	return r.patchRouteCleanupFailure(ctx, route, reason)
+}
+
+func (r *HTTPRouteReconciler) clearRouteCleanupFailure(ctx context.Context, route *gatewayv1.HTTPRoute) error {
+	_, err := r.patchRouteCleanupFailure(ctx, route, "")
+	return err
+}
+
+func (r *HTTPRouteReconciler) patchRouteCleanupFailure(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	reason string,
+) (bool, error) {
+	routeKey := client.ObjectKeyFromObject(route)
+	routeUID, generation, isDeleting := route.UID, route.Generation, !route.DeletionTimestamp.IsZero()
+	changed := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		changed = false
+		current := &gatewayv1.HTTPRoute{}
+		if err := r.Get(ctx, routeKey, current); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !sameHTTPRouteRevision(current, routeUID, generation, isDeleting) {
+			return errHTTPRouteChanged
+		}
+		key := r.Config.routeCleanupFailureAnnotation()
+		if current.Annotations[key] == reason {
+			*route = *current
+			return nil
+		}
+
+		base := current.DeepCopy()
+		if reason == "" {
+			delete(current.Annotations, key)
+		} else {
+			if current.Annotations == nil {
+				current.Annotations = map[string]string{}
+			}
+			current.Annotations[key] = reason
+		}
+		if err := r.Patch(ctx, current, optimisticMergeFrom(base)); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		changed = true
+		*route = *current
+		return nil
+	})
+	return changed, err
+}
+
 func (r *HTTPRouteReconciler) deleteRoute(
 	ctx context.Context,
 	expected *gatewayv1.HTTPRoute,
@@ -1005,6 +1153,7 @@ func (r *HTTPRouteReconciler) applyRouteBinding(route *gatewayv1.HTTPRoute, gate
 	route.Annotations[r.Config.routeGatewayUIDAnnotation()] = string(gateway.UID)
 	route.Annotations[r.Config.routeClusterIDAnnotation()] = r.Config.ClusterID
 	route.Annotations[r.Config.routeProjectIDAnnotation()] = r.Config.OpenStackProjectID
+	delete(route.Annotations, r.Config.routeCleanupFailureAnnotation())
 	bindingFinalizer := r.Config.routeBindingFinalizer(
 		r.Config.ClusterID,
 		r.Config.OpenStackProjectID,
@@ -1025,6 +1174,7 @@ func (r *HTTPRouteReconciler) clearRouteBinding(route *gatewayv1.HTTPRoute) {
 	delete(route.Annotations, r.Config.routeGatewayUIDAnnotation())
 	delete(route.Annotations, r.Config.routeClusterIDAnnotation())
 	delete(route.Annotations, r.Config.routeProjectIDAnnotation())
+	delete(route.Annotations, r.Config.routeCleanupFailureAnnotation())
 }
 
 func (r *HTTPRouteReconciler) removeStaleRouteBindingFinalizers(route *gatewayv1.HTTPRoute, expected string) {
@@ -1133,6 +1283,251 @@ func (r *HTTPRouteReconciler) hasRouteBindingFinalizer(route *gatewayv1.HTTPRout
 	return false
 }
 
+func (r *HTTPRouteReconciler) handleRouteProviderFailure(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	parent gatewayv1.ParentReference,
+	referencesEvaluated bool,
+	providerErr error,
+	action string,
+) (ctrl.Result, error) {
+	policy, ok := providerFailurePolicyFor(providerErr)
+	if !ok {
+		return ctrl.Result{}, providerErr
+	}
+	status := providerFailureRouteStatus(policy, referencesEvaluated)
+	transitioned, err := r.setRouteProviderFailureStatuses(
+		ctx,
+		route,
+		[]parentStatusUpdate{{parent: parent, status: status}},
+		policy,
+		referencesEvaluated,
+	)
+	if err != nil {
+		return ctrl.Result{}, errors.Join(
+			safeProviderReconcileError(policy, providerErr),
+			fmt.Errorf("publish HTTPRoute provider failure: %w", err),
+		)
+	}
+	if transitioned {
+		recordProviderWarning(r.Recorder, route, policy, action)
+	}
+	return providerFailureResult(policy, providerErr, string(route.UID))
+}
+
+func (r *HTTPRouteReconciler) handleRouteFinalizationFailure(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	identity cloud.Identity,
+	providerErr error,
+) (ctrl.Result, error) {
+	policy, ok := providerFailurePolicyFor(providerErr)
+	if !ok {
+		return ctrl.Result{}, providerErr
+	}
+	policy = providerCleanupFailurePolicy(policy, "HTTPRoute")
+	diagnosticTransitioned, diagnosticErr := r.setRouteCleanupFailure(ctx, route, policy.reason)
+	parent, found := parentRefForStoredGateway(route, identity)
+	var statusErr error
+	if found {
+		_, statusErr = r.setDeletingRouteProviderFailure(ctx, route, parent, policy)
+	}
+	if diagnosticErr != nil || statusErr != nil {
+		return ctrl.Result{}, errors.Join(
+			safeProviderReconcileError(policy, providerErr),
+			fmt.Errorf("publish HTTPRoute cleanup failure: %w", errors.Join(diagnosticErr, statusErr)),
+		)
+	}
+	if diagnosticTransitioned {
+		recordProviderWarning(r.Recorder, route, policy, "DeleteHTTPRoute")
+	}
+	return providerFinalizationFailureResult(policy, providerErr, string(route.UID))
+}
+
+func providerFailureRouteStatus(policy providerFailurePolicy, referencesEvaluated bool) routeReconcileStatus {
+	status := programmedRouteStatus()
+	if !referencesEvaluated {
+		status.resolved = metav1.ConditionUnknown
+		status.resolvedReason = string(gatewayv1.RouteReasonPending)
+		status.resolvedMessage = "Backend references have not been evaluated"
+	}
+	status.programmed = policy.conditionStatus
+	status.programmedReason = policy.reason
+	status.programmedMessage = policy.message
+	return status
+}
+
+func parentRefForStoredGateway(route *gatewayv1.HTTPRoute, identity cloud.Identity) (gatewayv1.ParentReference, bool) {
+	parent := gatewayv1.ParentReference{Name: gatewayv1.ObjectName(identity.GatewayName)}
+	if identity.GatewayNamespace != route.Namespace {
+		namespace := gatewayv1.Namespace(identity.GatewayNamespace)
+		parent.Namespace = &namespace
+	}
+	for _, candidate := range route.Spec.ParentRefs {
+		if sameGatewayTarget(candidate, route.Namespace, parent, route.Namespace) {
+			return candidate, true
+		}
+	}
+	return gatewayv1.ParentReference{}, false
+}
+
+func (r *HTTPRouteReconciler) setRouteProviderFailureStatuses(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	updates []parentStatusUpdate,
+	policy providerFailurePolicy,
+	referencesEvaluated bool,
+) (bool, error) {
+	routeKey := client.ObjectKeyFromObject(route)
+	observedGeneration := route.Generation
+	routeUID := route.UID
+	transitioned := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		transitioned = false
+		current := &gatewayv1.HTTPRoute{}
+		if err := r.Get(ctx, routeKey, current); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if current.UID != routeUID || current.Generation != observedGeneration || !current.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		base := current.DeepCopy()
+		existing := append([]gatewayv1.RouteParentStatus(nil), current.Status.Parents...)
+		parents := make([]gatewayv1.RouteParentStatus, 0, len(existing)+len(updates))
+		for _, parent := range existing {
+			if parent.ControllerName != r.Config.ControllerName {
+				parents = append(parents, parent)
+			}
+		}
+		for _, update := range updates {
+			parentStatus := gatewayv1.RouteParentStatus{ParentRef: update.parent, ControllerName: r.Config.ControllerName}
+			for _, candidate := range existing {
+				if candidate.ControllerName != r.Config.ControllerName || !parentRefsEqual(candidate.ParentRef, current.Namespace, update.parent, current.Namespace) {
+					continue
+				}
+				parentStatus.Conditions = append([]metav1.Condition(nil), candidate.Conditions...)
+				break
+			}
+			resolvedGeneration := conditionObservedGeneration(
+				parentStatus.Conditions,
+				string(gatewayv1.RouteConditionResolvedRefs),
+				observedGeneration,
+				referencesEvaluated,
+			)
+			programmedGeneration := conditionObservedGeneration(
+				parentStatus.Conditions,
+				r.Config.domain()+"/Programmed",
+				observedGeneration,
+				policy.advancesObservedGeneration,
+			)
+			transitioned = transitioned || conditionTransitioned(
+				parentStatus.Conditions,
+				r.Config.domain()+"/Programmed",
+				update.status.programmed,
+				update.status.programmedReason,
+				update.status.programmedMessage,
+				programmedGeneration,
+			)
+			setCondition(&parentStatus.Conditions, condition(string(gatewayv1.RouteConditionAccepted), update.status.accepted, update.status.acceptedReason, update.status.acceptedMessage, observedGeneration))
+			setCondition(&parentStatus.Conditions, condition(string(gatewayv1.RouteConditionResolvedRefs), update.status.resolved, update.status.resolvedReason, update.status.resolvedMessage, resolvedGeneration))
+			setCondition(&parentStatus.Conditions, condition(r.Config.domain()+"/Programmed", update.status.programmed, update.status.programmedReason, update.status.programmedMessage, programmedGeneration))
+			parents = append(parents, parentStatus)
+		}
+		current.Status.Parents = parents
+		if reflect.DeepEqual(base.Status, current.Status) {
+			*route = *current
+			return nil
+		}
+		if err := r.Status().Patch(ctx, current, optimisticMergeFrom(base)); err != nil {
+			return err
+		}
+		*route = *current
+		log.FromContext(ctx).V(1).Info("Updated HTTPRoute status")
+		return nil
+	})
+	return transitioned, err
+}
+
+func (r *HTTPRouteReconciler) setDeletingRouteProviderFailure(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	parent gatewayv1.ParentReference,
+	policy providerFailurePolicy,
+) (bool, error) {
+	routeKey := client.ObjectKeyFromObject(route)
+	observedGeneration := route.Generation
+	routeUID := route.UID
+	transitioned := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		transitioned = false
+		current := &gatewayv1.HTTPRoute{}
+		if err := r.Get(ctx, routeKey, current); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if current.UID != routeUID || current.Generation != observedGeneration || current.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		parentInSpec := false
+		for _, candidate := range current.Spec.ParentRefs {
+			if parentRefsEqual(candidate, current.Namespace, parent, current.Namespace) {
+				parentInSpec = true
+				break
+			}
+		}
+		if !parentInSpec {
+			return nil
+		}
+		parentIndex := -1
+		for index := range current.Status.Parents {
+			candidate := &current.Status.Parents[index]
+			if candidate.ControllerName == r.Config.ControllerName && parentRefsEqual(candidate.ParentRef, current.Namespace, parent, current.Namespace) {
+				parentIndex = index
+				break
+			}
+		}
+		if parentIndex < 0 {
+			return nil
+		}
+
+		base := current.DeepCopy()
+		conditions := &current.Status.Parents[parentIndex].Conditions
+		programmedGeneration := conditionObservedGeneration(
+			*conditions,
+			r.Config.domain()+"/Programmed",
+			observedGeneration,
+			policy.advancesObservedGeneration,
+		)
+		transitioned = conditionTransitioned(
+			*conditions,
+			r.Config.domain()+"/Programmed",
+			policy.conditionStatus,
+			policy.reason,
+			policy.message,
+			programmedGeneration,
+		)
+		setCondition(conditions, condition(
+			r.Config.domain()+"/Programmed",
+			policy.conditionStatus,
+			policy.reason,
+			policy.message,
+			programmedGeneration,
+		))
+		if reflect.DeepEqual(base.Status, current.Status) {
+			*route = *current
+			return nil
+		}
+		if err := r.Status().Patch(ctx, current, optimisticMergeFrom(base)); err != nil {
+			return err
+		}
+		*route = *current
+		log.FromContext(ctx).V(1).Info("Updated HTTPRoute status during finalization")
+		return nil
+	})
+	return transitioned, err
+}
+
 func statusForRouteBuildError(err error) routeReconcileStatus {
 	if apierrors.IsNotFound(err) {
 		return unresolvedRouteStatus(string(gatewayv1.RouteReasonBackendNotFound), err.Error())
@@ -1180,14 +1575,6 @@ func pendingRouteStatus(message string) routeReconcileStatus {
 	status := programmedRouteStatus()
 	status.programmed = metav1.ConditionFalse
 	status.programmedReason = "Pending"
-	status.programmedMessage = message
-	return status
-}
-
-func failedRouteStatus(message string) routeReconcileStatus {
-	status := programmedRouteStatus()
-	status.programmed = metav1.ConditionFalse
-	status.programmedReason = "OpenStackError"
 	status.programmedMessage = message
 	return status
 }
