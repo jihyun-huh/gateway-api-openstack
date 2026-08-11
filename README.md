@@ -183,6 +183,18 @@ open a focused issue or look for issues marked `help wanted`.
 Until the first architecture decision records are accepted, substantial API or
 controller changes should begin as a design issue.
 
+Changes to controller patching, finalizers, or cache indexes should also run:
+
+```sh
+make envtest-assets
+make test-envtest
+```
+
+The first command downloads pinned Kubernetes 1.36.2 control plane binaries.
+The test loads the Gateway API v1.6.1 Standard CRDs and does not need Kind, a
+kubeconfig, or OpenStack access. It is not an OpenStack end-to-end test or
+Gateway API conformance evidence.
+
 Maintainers preparing a release must follow the
 [draft release and artifact verification process](docs/releasing.md). Release
 packaging does not replace the OpenStack and conformance evidence required by

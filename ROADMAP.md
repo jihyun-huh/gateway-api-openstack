@@ -239,8 +239,15 @@ procedure still need validation in a disposable Amphora environment. The
 experimental [ownership audit](docs/design/ownership-audit.md) now compares
 Kubernetes ownership records with OpenStack resources discovered in the
 authenticated project without deleting anything. The command and report have
-unit coverage. The documented [operator recovery workflow](docs/operator-recovery.md)
-still needs validation in that environment.
+unit coverage. The documented
+[operator recovery workflow](docs/operator-recovery.md) still needs validation
+in that environment.
+
+The controller envtest uses a real Kubernetes API server and etcd to cover
+status subresources, stale resource versions, durable binding checkpoints,
+progressing finalization with a newly constructed reconciler, and cache field
+indexes. It does not exercise a manager or process restart, run an OpenStack
+data plane, or replace the fault tests required for this phase.
 
 ### Kubernetes and OpenStack API efficiency
 
