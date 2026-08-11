@@ -68,7 +68,7 @@ jobs:
       - name: Verify source and tests
         run: make verify
 
-      - name: Build controller and capability probe
+      - name: Build release binaries
         run: make build
 
       - name: Install GoReleaser

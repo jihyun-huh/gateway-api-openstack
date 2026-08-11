@@ -238,9 +238,12 @@ kubectl delete -k config/default
 ```
 
 Each of the first three commands waits for deletion by default. If one remains
-blocked, inspect its conditions, controller logs, and the matching OpenStack
-resources. Do not remove controller finalizers manually because doing so
-bypasses ownership checks and cleanup.
+blocked, keep the controller Deployment, credential Secret, and OpenStack
+access available. Inspect the object's conditions and controller logs, then
+use the ownership audit to compare immutable identity with OpenStack. Do not
+remove controller finalizers manually because doing so bypasses ownership
+checks and cleanup. Follow the [operator recovery guide](operator-recovery.md)
+for the complete procedure.
 
 Before uninstalling a shared controller, repeat the HTTPRoute, Gateway, and
 GatewayClass deletion sequence for every class using its exact controller
