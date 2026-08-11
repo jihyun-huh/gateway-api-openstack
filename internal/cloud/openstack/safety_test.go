@@ -205,7 +205,10 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	requests := newSafetyRequestLog()
 
-	provider := NewProvider(ServiceClients{LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, "", requests))}, ProviderConfig{})
+	provider := NewProvider(ServiceClients{
+		LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, "", requests)),
+		ProjectID:    "project-a",
+	}, ProviderConfig{})
 	deletionPlan, err := provider.buildGatewayDeletionPlan(context.Background(), identity, "load-balancer-1")
 	if err != nil {
 		t.Fatalf("buildGatewayDeletionPlan() error = %v", err)
@@ -249,7 +252,10 @@ func TestBuildGatewayDeletionPlanRejectsUnmanagedDescendants(t *testing.T) {
 		t.Run(resource, func(t *testing.T) {
 			identity := safetyTestIdentity(t)
 
-			provider := NewProvider(ServiceClients{LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, resource, newSafetyRequestLog()))}, ProviderConfig{})
+			provider := NewProvider(ServiceClients{
+				LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, resource, newSafetyRequestLog())),
+				ProjectID:    "project-a",
+			}, ProviderConfig{})
 			_, err := provider.buildGatewayDeletionPlan(context.Background(), identity, "load-balancer-1")
 			if !errors.Is(err, cloud.ErrOwnershipConflict) {
 				t.Fatalf("buildGatewayDeletionPlan() error = %v, want ownership conflict for unmanaged %s", err, resource)
@@ -369,6 +375,9 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 	networkHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/floatingips":
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			items := []any{}
 			if deleted["/floatingips/floating-ip-1"] == 0 {
 				items = append(items, map[string]any{
@@ -555,10 +564,15 @@ func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResourc
 			if !safetyRequireQuery(t, w, request, "loadbalancer_id", "load-balancer-1") {
 				return
 			}
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{
 				map[string]any{
-					"id":   "listener-1",
-					"tags": tags["listener"],
+					"id":            "listener-1",
+					"project_id":    "project-a",
+					"loadbalancers": []any{map[string]any{"id": "load-balancer-1"}},
+					"tags":          tags["listener"],
 					"l7policies": []any{
 						map[string]any{"id": "nested-policy-without-tags"},
 					},
@@ -568,27 +582,40 @@ func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResourc
 			if !safetyRequireQuery(t, w, request, "listener_id", "listener-1") {
 				return
 			}
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"l7policies": []any{
 				map[string]any{
-					"id":   "policy-1",
-					"tags": tags["policy"],
+					"id":          "policy-1",
+					"project_id":  "project-a",
+					"listener_id": "listener-1",
+					"tags":        tags["policy"],
 					"rules": []any{
 						map[string]any{"id": "nested-rule-without-tags"},
 					},
 				},
 			}})
 		case "/lbaas/l7policies/policy-1/rules":
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"rules": []any{
-				map[string]any{"id": "rule-1", "tags": tags["rule"]},
+				map[string]any{"id": "rule-1", "project_id": "project-a", "tags": tags["rule"]},
 			}})
 		case "/lbaas/pools":
 			if !safetyRequireQuery(t, w, request, "loadbalancer_id", "load-balancer-1") {
 				return
 			}
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"pools": []any{
 				map[string]any{
-					"id":   "pool-1",
-					"tags": tags["pool"],
+					"id":            "pool-1",
+					"project_id":    "project-a",
+					"loadbalancers": []any{map[string]any{"id": "load-balancer-1"}},
+					"tags":          tags["pool"],
 					"members": []any{
 						map[string]any{"id": "nested-member-without-tags"},
 					},
@@ -596,15 +623,24 @@ func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResourc
 				},
 			}})
 		case "/lbaas/pools/pool-1/members":
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"members": []any{
-				map[string]any{"id": "member-1", "tags": tags["member"]},
+				map[string]any{"id": "member-1", "project_id": "project-a", "pool_id": "pool-1", "tags": tags["member"]},
 			}})
 		case "/lbaas/healthmonitors":
 			if !safetyRequireQuery(t, w, request, "pool_id", "pool-1") {
 				return
 			}
+			if !safetyRequireQuery(t, w, request, "project_id", "project-a") {
+				return
+			}
 			safetyWriteJSON(t, w, map[string]any{"healthmonitors": []any{
-				map[string]any{"id": "monitor-1", "tags": tags["monitor"]},
+				map[string]any{
+					"id": "monitor-1", "project_id": "project-a",
+					"pools": []any{map[string]any{"id": "pool-1"}}, "tags": tags["monitor"],
+				},
 			}})
 		default:
 			t.Errorf("unexpected graph request: %s", request.URL.RequestURI())

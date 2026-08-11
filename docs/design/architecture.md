@@ -523,6 +523,10 @@ controller restart. The finalizer remains until the entire graph whose
 ownership has been validated is absent. The controller never forcibly removes
 a finalizer.
 
+The proposed [ownership audit](ownership-audit.md) gives operators a read-only
+view of stored bindings and discovered OpenStack resources. Its findings are
+advisory and do not change the ownership proof required at mutation time.
+
 ## Security and release model
 
 - Prefer Keystone application credentials with only the permissions that the
