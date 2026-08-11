@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -221,8 +220,7 @@ func newGatewayClassReconciler(t *testing.T, objects ...client.Object) (*Gateway
 	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatal(err)
 	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).
 		WithStatusSubresource(&gatewayv1.GatewayClass{}).
 		WithObjects(objects...).
 		Build()

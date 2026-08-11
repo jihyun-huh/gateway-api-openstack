@@ -35,23 +35,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/go-logr/logr"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 // GatewayReconciler owns the Gateway-scoped Octavia resources.
 type GatewayReconciler struct {
 	client.Client
-	Provider cloud.Provider
-	Config   Config
-	logger   logr.Logger
+	Provider    cloud.Provider
+	Coordinator *GraphCoordinator
+	APIReader   client.Reader
+	Config      Config
 }
 
 const openStackResourceNamePrefix = "gateway-api-openstack"
+
+var (
+	errGatewayChanged    = errors.New("Gateway changed during reconciliation")
+	errAPIReaderRequired = errors.New("uncached API reader is required")
+)
 
 type gatewayValidationError struct {
 	message           string
@@ -66,9 +70,9 @@ func (e *gatewayValidationError) Error() string { return e.message }
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses;httproutes,verbs=get;list;watch
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	r.logger = log.FromContext(ctx).WithValues("gateway", req.NamespacedName)
-	ctx = log.IntoContext(ctx, r.logger)
-	r.logger.V(4).Info("Reconciling Gateway")
+	logger := log.FromContext(ctx).WithValues("gateway", req.NamespacedName)
+	ctx = log.IntoContext(ctx, logger)
+	logger.V(4).Info("Reconciling Gateway")
 
 	var gateway gatewayv1.Gateway
 	if err := r.Get(ctx, req.NamespacedName, &gateway); err != nil {
@@ -80,10 +84,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, nil
 		}
 		if err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion); err != nil {
-			r.logger.Error(err, "Could not clean up OpenStack resources for Gateway")
+			logger.Error(err, "Could not clean up OpenStack resources for Gateway")
 			return ctrl.Result{}, err
 		}
-		r.logger.V(1).Info("Cleaned up OpenStack resources for Gateway")
+		logger.V(1).Info("Cleaned up OpenStack resources for Gateway")
 		return ctrl.Result{}, nil
 	}
 
@@ -91,6 +95,8 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gateway) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
 	gatewayClass, isManaged, err := r.getGatewayClass(ctx, &gateway)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -98,15 +104,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 	if !isManaged {
 		if controllerutil.ContainsFinalizer(&gateway, r.Config.gatewayFinalizer()) {
 			if err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion); err != nil {
-				r.logger.Error(err, "Could not clean up OpenStack resources for unmanaged Gateway")
+				logger.Error(err, "Could not clean up OpenStack resources for unmanaged Gateway")
 				return ctrl.Result{}, err
 			}
-			r.logger.V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
+			logger.V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.validateGatewayBinding(&gateway); err != nil {
+	if err := validateGatewayBinding(r.Config, &gateway); err != nil {
 		return ctrl.Result{}, r.setGatewayFailureReason(ctx, &gateway, gatewayv1.GatewayReasonInvalidParameters, err.Error())
 	}
 	if gatewayClass != nil && gatewayClass.Spec.ParametersRef != nil {
@@ -145,18 +151,22 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if err := r.Patch(ctx, &gateway, optimisticMergeFrom(metadataBase)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch Gateway resource binding: %w", err)
 		}
-		r.logger.V(1).Info("Added finalizer and OpenStack resource binding to Gateway")
+		logger.V(1).Info("Added finalizer and OpenStack resource binding to Gateway")
+		return ctrl.Result{Requeue: true}, nil
 	}
-	gatewayState, err := r.Provider.EnsureGateway(ctx, r.gatewaySpec(&gateway, gatewayListener))
+	gatewayState, err := r.ensureGateway(ctx, &gateway)
 	if err != nil {
+		if errors.Is(err, errGatewayChanged) {
+			return ctrl.Result{}, err
+		}
 		if statusErr := r.setGatewayOpenStackFailure(ctx, &gateway, gatewayListener, err); statusErr != nil {
-			r.logger.Error(errors.Join(err, statusErr), "Could not ensure OpenStack resources or update Gateway status")
+			logger.Error(errors.Join(err, statusErr), "Could not ensure OpenStack resources or update Gateway status")
 			return ctrl.Result{}, errors.Join(err, statusErr)
 		}
-		r.logger.Error(err, "Could not ensure OpenStack resources for Gateway")
+		logger.Error(err, "Could not ensure OpenStack resources for Gateway")
 		return ctrl.Result{}, err
 	}
-	r.logger.V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
+	logger.V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
 	return ctrl.Result{}, r.setGatewayProgrammed(ctx, &gateway, gatewayListener, gatewayState)
 }
 
@@ -183,10 +193,10 @@ func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types
 	if !hasFinalizer && !hasBinding {
 		return nil
 	}
-	if err := r.validateGatewayBinding(&gateway); err != nil {
+	if err := validateGatewayBinding(r.Config, &gateway); err != nil {
 		return err
 	}
-	if err := r.Provider.DeleteGateway(ctx, r.storedGatewayIdentity(&gateway)); err != nil {
+	if err := r.deleteGateway(ctx, &gateway); err != nil {
 		return fmt.Errorf("delete OpenStack resources for Gateway: %w", err)
 	}
 	metadataBase := gateway.DeepCopy()
@@ -200,11 +210,71 @@ func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types
 	return nil
 }
 
-func (r *GatewayReconciler) validateGatewayBinding(gateway *gatewayv1.Gateway) error {
+func (r *GatewayReconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayState, error) {
+	release, err := acquireGatewayGraph(ctx, r.Coordinator, string(expected.UID))
+	if err != nil {
+		return cloud.GatewayState{}, fmt.Errorf("acquire Gateway graph: %w", err)
+	}
+	defer release()
+
+	var current gatewayv1.Gateway
+	if err := r.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
+		return cloud.GatewayState{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
+	}
+	if current.UID != expected.UID || current.Generation != expected.Generation || !current.DeletionTimestamp.IsZero() {
+		return cloud.GatewayState{}, errGatewayChanged
+	}
+	gatewayClass, managed, err := r.getGatewayClass(ctx, &current)
+	if err != nil {
+		return cloud.GatewayState{}, err
+	}
+	if !managed || gatewayClass == nil || gatewayClass.Spec.ParametersRef != nil {
+		return cloud.GatewayState{}, errGatewayChanged
+	}
+	if !controllerutil.ContainsFinalizer(&current, r.Config.gatewayFinalizer()) {
+		return cloud.GatewayState{}, errGatewayChanged
+	}
+	if err := validateGatewayBinding(r.Config, &current); err != nil {
+		return cloud.GatewayState{}, errors.Join(errGatewayChanged, err)
+	}
+	listener, validationErr := validateGateway(&current)
+	if validationErr != nil || current.Annotations[r.Config.gatewayListenerPortAnnotation()] != strconv.Itoa(int(listener.Port)) {
+		return cloud.GatewayState{}, errGatewayChanged
+	}
+
+	return r.Provider.EnsureGateway(ctx, r.gatewaySpec(&current, listener))
+}
+
+func (r *GatewayReconciler) deleteGateway(ctx context.Context, expected *gatewayv1.Gateway) error {
+	if r.APIReader == nil {
+		return errAPIReaderRequired
+	}
+	release, err := acquireGatewayGraph(ctx, r.Coordinator, string(expected.UID))
+	if err != nil {
+		return fmt.Errorf("acquire Gateway graph: %w", err)
+	}
+	defer release()
+
+	var current gatewayv1.Gateway
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
+		return errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
+	}
+	if current.UID != expected.UID || current.Generation != expected.Generation ||
+		current.ResourceVersion != expected.ResourceVersion || current.DeletionTimestamp.IsZero() != expected.DeletionTimestamp.IsZero() {
+		return errGatewayChanged
+	}
+	if err := validateGatewayBinding(r.Config, &current); err != nil {
+		return errors.Join(errGatewayChanged, err)
+	}
+
+	return r.Provider.DeleteGateway(ctx, r.storedGatewayIdentity(&current))
+}
+
+func validateGatewayBinding(config Config, gateway *gatewayv1.Gateway) error {
 	bindingValues := []string{
-		gateway.Annotations[r.Config.gatewayListenerPortAnnotation()],
-		gateway.Annotations[r.Config.gatewayClusterIDAnnotation()],
-		gateway.Annotations[r.Config.gatewayProjectIDAnnotation()],
+		gateway.Annotations[config.gatewayListenerPortAnnotation()],
+		gateway.Annotations[config.gatewayClusterIDAnnotation()],
+		gateway.Annotations[config.gatewayProjectIDAnnotation()],
 	}
 	populatedBindingCount := 0
 	for _, value := range bindingValues {
@@ -212,13 +282,13 @@ func (r *GatewayReconciler) validateGatewayBinding(gateway *gatewayv1.Gateway) e
 			populatedBindingCount++
 		}
 	}
-	if populatedBindingCount != len(bindingValues) && (populatedBindingCount != 0 || controllerutil.ContainsFinalizer(gateway, r.Config.gatewayFinalizer())) {
+	if populatedBindingCount != len(bindingValues) && (populatedBindingCount != 0 || controllerutil.ContainsFinalizer(gateway, config.gatewayFinalizer())) {
 		return fmt.Errorf("gateway %s/%s has an incomplete stored OpenStack resource binding; restore the original annotations before reconciling", gateway.Namespace, gateway.Name)
 	}
-	if stored := gateway.Annotations[r.Config.gatewayClusterIDAnnotation()]; stored != "" && stored != r.Config.ClusterID {
+	if stored := gateway.Annotations[config.gatewayClusterIDAnnotation()]; stored != "" && stored != config.ClusterID {
 		return fmt.Errorf("controller cluster identity differs from this Gateway's existing resource binding; restore the original cluster ID before reconciling")
 	}
-	if stored := gateway.Annotations[r.Config.gatewayProjectIDAnnotation()]; stored != "" && stored != r.Config.OpenStackProjectID {
+	if stored := gateway.Annotations[config.gatewayProjectIDAnnotation()]; stored != "" && stored != config.OpenStackProjectID {
 		return fmt.Errorf("authenticated OpenStack project differs from this Gateway's existing resource binding; restore access to the original project before reconciling")
 	}
 	return nil
@@ -503,7 +573,9 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gateway, bas
 
 func (r *GatewayReconciler) attachedRouteCount(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener) (int32, error) {
 	var routes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &routes, client.InNamespace(gateway.Namespace)); err != nil {
+	if err := r.List(ctx, &routes, client.MatchingFields{
+		indexHTTPRouteByStatusGateway: objectKeyString(client.ObjectKeyFromObject(gateway)),
+	}); err != nil {
 		return 0, err
 	}
 	var count int32
@@ -549,30 +621,39 @@ func resourceDisplayName(parts ...string) string {
 	return name
 }
 
-func gatewayRequestsForHTTPRoute(_ context.Context, object client.Object) []reconcile.Request {
+func (r *GatewayReconciler) gatewayRequestsForHTTPRoute(_ context.Context, object client.Object) []reconcile.Request {
 	route, ok := object.(*gatewayv1.HTTPRoute)
 	if !ok {
 		return nil
 	}
 
-	requests := make([]reconcile.Request, 0, len(route.Spec.ParentRefs))
-	seen := make(map[types.NamespacedName]struct{}, len(route.Spec.ParentRefs))
-	for _, parentRef := range route.Spec.ParentRefs {
-		if !isGatewayParentRef(parentRef) {
-			continue
+	keys := make(map[types.NamespacedName]struct{}, len(route.Spec.ParentRefs)+len(route.Status.Parents)+1)
+	addParent := func(parentRef gatewayv1.ParentReference) {
+		if !isGatewayParentRef(parentRef) || parentRef.Name == "" {
+			return
 		}
 		gatewayNamespace := route.Namespace
 		if parentRef.Namespace != nil {
 			gatewayNamespace = string(*parentRef.Namespace)
 		}
-		gatewayKey := types.NamespacedName{Namespace: gatewayNamespace, Name: string(parentRef.Name)}
-		if _, alreadyQueued := seen[gatewayKey]; alreadyQueued {
+		keys[types.NamespacedName{Namespace: gatewayNamespace, Name: string(parentRef.Name)}] = struct{}{}
+	}
+	for _, parentRef := range route.Spec.ParentRefs {
+		addParent(parentRef)
+	}
+	for _, parentStatus := range route.Status.Parents {
+		if parentStatus.ControllerName != r.Config.ControllerName {
 			continue
 		}
-		seen[gatewayKey] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: gatewayKey})
+		addParent(parentStatus.ParentRef)
 	}
-	return requests
+	boundNamespace := route.Annotations[r.Config.routeGatewayNamespaceAnnotation()]
+	boundName := route.Annotations[r.Config.routeGatewayNameAnnotation()]
+	boundUID := route.Annotations[r.Config.routeGatewayUIDAnnotation()]
+	if boundNamespace != "" && boundName != "" && boundUID != "" {
+		keys[types.NamespacedName{Namespace: boundNamespace, Name: boundName}] = struct{}{}
+	}
+	return sortedRequests(keys)
 }
 
 func (r *GatewayReconciler) gatewayRequestsForGatewayClass(ctx context.Context, object client.Object) []reconcile.Request {
@@ -582,28 +663,37 @@ func (r *GatewayReconciler) gatewayRequestsForGatewayClass(ctx context.Context, 
 	}
 
 	var gateways gatewayv1.GatewayList
-	if err := r.List(ctx, &gateways); err != nil {
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		indexGatewayByClass: gatewayClass.Name,
+	}); err != nil {
 		log.FromContext(ctx).Error(err, "Could not list Gateways for GatewayClass", "gatewayClass", gatewayClass.Name)
 		return nil
 	}
-	requests := make([]reconcile.Request, 0, len(gateways.Items))
+	keys := make(map[types.NamespacedName]struct{}, len(gateways.Items))
 	for _, gateway := range gateways.Items {
-		if gateway.Spec.GatewayClassName != gatewayv1.ObjectName(gatewayClass.Name) {
-			continue
-		}
-		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&gateway)})
+		keys[client.ObjectKeyFromObject(&gateway)] = struct{}{}
 	}
-	return requests
+	return sortedRequests(keys)
 }
 
 func (r *GatewayReconciler) SetupWithManager(manager ctrl.Manager) error {
+	if r.Coordinator == nil {
+		return errGraphCoordinatorRequired
+	}
+	if r.APIReader == nil {
+		return errAPIReaderRequired
+	}
 	return ctrl.NewControllerManagedBy(manager).
-		For(&gatewayv1.Gateway{}).
-		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayRequestsForHTTPRoute)).
+		For(&gatewayv1.Gateway{}, builder.WithPredicates(gatewayReconcilePredicate(r.Config))).
+		Watches(
+			&gatewayv1.HTTPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForHTTPRoute),
+			builder.WithPredicates(httpRouteForGatewayPredicate(r.Config)),
+		).
 		Watches(
 			&gatewayv1.GatewayClass{},
 			handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForGatewayClass),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(updatePredicate(generationOrDeletionChanged)),
 		).
 		Named("gateway").
 		Complete(r)

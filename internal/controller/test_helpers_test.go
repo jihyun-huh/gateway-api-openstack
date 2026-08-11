@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
@@ -32,6 +33,7 @@ type recordingProvider struct {
 	gatewaySpecs     []cloud.GatewaySpec
 	gatewayErr       error
 	gatewayDeleteErr error
+	gatewayGets      int
 	routeSpecs       []cloud.RouteSpec
 	routeDeleteErr   error
 	deletedGateways  []cloud.Identity
@@ -47,6 +49,7 @@ func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewayS
 }
 
 func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayState, bool, error) {
+	p.gatewayGets++
 	return cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}, true, nil
 }
 
@@ -101,4 +104,15 @@ func testScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	return scheme
+}
+
+func indexedFakeClientBuilder(scheme *runtime.Scheme, config Config) *fake.ClientBuilder {
+	builder := fake.NewClientBuilder().WithScheme(scheme)
+	for _, index := range controllerFieldIndexes(config) {
+		if _, _, err := scheme.ObjectKinds(index.object); err != nil {
+			continue
+		}
+		builder.WithIndex(index.object, index.field, index.extract)
+	}
+	return builder
 }

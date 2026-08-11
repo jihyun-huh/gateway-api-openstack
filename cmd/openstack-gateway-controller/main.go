@@ -149,13 +149,31 @@ func run(ctx context.Context) error {
 		OperationTimeout: operationTimeout,
 		PollInterval:     pollInterval,
 	})
+	if err := controller.SetupIndexes(ctx, manager.GetFieldIndexer(), controllerConfig); err != nil {
+		return fmt.Errorf("set up controller field indexes: %w", err)
+	}
+	graphCoordinator := &controller.GraphCoordinator{}
 	if err := (&controller.GatewayClassReconciler{Client: manager.GetClient(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up GatewayClass controller: %w", err)
 	}
-	if err := (&controller.GatewayReconciler{Client: manager.GetClient(), Provider: openStackProvider, Config: controllerConfig}).SetupWithManager(manager); err != nil {
+	gatewayReconciler := &controller.GatewayReconciler{
+		Client:      manager.GetClient(),
+		Provider:    openStackProvider,
+		Coordinator: graphCoordinator,
+		APIReader:   manager.GetAPIReader(),
+		Config:      controllerConfig,
+	}
+	if err := gatewayReconciler.SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up Gateway controller: %w", err)
 	}
-	if err := (&controller.HTTPRouteReconciler{Client: manager.GetClient(), Provider: openStackProvider, Config: controllerConfig}).SetupWithManager(manager); err != nil {
+	routeReconciler := &controller.HTTPRouteReconciler{
+		Client:      manager.GetClient(),
+		Provider:    openStackProvider,
+		Coordinator: graphCoordinator,
+		APIReader:   manager.GetAPIReader(),
+		Config:      controllerConfig,
+	}
+	if err := routeReconciler.SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up HTTPRoute controller: %w", err)
 	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
