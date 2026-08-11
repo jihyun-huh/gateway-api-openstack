@@ -147,7 +147,11 @@ The base Deployment also sets these binary flags: leader election enabled,
 metrics on `:8080`, probes on `:8081`, and Octavia microversion `2.5`. The
 binary additionally supports `--openstack-operation-timeout` and
 `--openstack-poll-interval`. The manifests do not override these two flags, so
-the binary uses defaults of 10 minutes and 2 seconds.
+the binary uses defaults of 10 minutes and 2 seconds. The timeout limits each
+provider reconciliation call, including all OpenStack requests made by that
+call. After starting an asynchronous Octavia change, the controller returns and
+observes it again after the poll interval instead of waiting for it to finish
+in the same reconciliation.
 
 ## Apply the basic example
 

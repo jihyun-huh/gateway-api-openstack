@@ -18,11 +18,13 @@ package openstack
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/gophercloud/gophercloud/v2"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 func TestAuthenticatedProjectIDFallsBackToExplicitTenantID(t *testing.T) {
@@ -36,6 +38,13 @@ func TestAuthenticatedProjectIDFallsBackToExplicitTenantID(t *testing.T) {
 	}
 	if _, err := authenticatedProjectID(provider, gophercloud.AuthOptions{}); err == nil {
 		t.Fatal("authenticatedProjectID() accepted unscoped authentication")
+	}
+}
+
+func TestNewServiceClientsClassifiesInvalidConfiguration(t *testing.T) {
+	_, err := NewServiceClients(context.Background(), ClientConfig{Microversion: "2.4"})
+	if !errors.Is(err, cloud.ErrTerminalValidation) {
+		t.Fatalf("NewServiceClients() error = %v, want terminal validation category", err)
 	}
 }
 

@@ -83,9 +83,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if !controllerutil.ContainsFinalizer(&gateway, r.Config.gatewayFinalizer()) {
 			return ctrl.Result{}, nil
 		}
-		if err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion); err != nil {
+		result, err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
+		if err != nil {
 			logger.Error(err, "Could not clean up OpenStack resources for Gateway")
 			return ctrl.Result{}, err
+		}
+		if result.Requeue || result.RequeueAfter > 0 {
+			return result, nil
 		}
 		logger.V(1).Info("Cleaned up OpenStack resources for Gateway")
 		return ctrl.Result{}, nil
@@ -103,9 +107,13 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 	}
 	if !isManaged {
 		if controllerutil.ContainsFinalizer(&gateway, r.Config.gatewayFinalizer()) {
-			if err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion); err != nil {
+			result, err := r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
+			if err != nil {
 				logger.Error(err, "Could not clean up OpenStack resources for unmanaged Gateway")
 				return ctrl.Result{}, err
+			}
+			if result.Requeue || result.RequeueAfter > 0 {
+				return result, nil
 			}
 			logger.V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
 		}
@@ -119,7 +127,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if err := r.setGatewayFailureReason(ctx, &gateway, gatewayv1.GatewayReasonInvalidParameters, "GatewayClass parametersRef is not supported in Phase 1"); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
+		return r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
 	}
 
 	gatewayListener, validationErr := validateGateway(&gateway)
@@ -127,7 +135,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if err := r.setGatewayFailure(ctx, &gateway, validationErr); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
+		return r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
 	}
 	desiredListenerPort := strconv.Itoa(int(gatewayListener.Port))
 	storedListenerPort := gateway.Annotations[r.Config.gatewayListenerPortAnnotation()]
@@ -135,7 +143,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		if err := r.setGatewayOpenStackFailure(ctx, &gateway, gatewayListener, errors.New("listener port changed; replacing the controller-owned OpenStack resource graph")); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
+		return r.cleanupGateway(ctx, client.ObjectKeyFromObject(&gateway), gateway.ResourceVersion)
 	}
 	storedClusterID := gateway.Annotations[r.Config.gatewayClusterIDAnnotation()]
 	storedOpenStackProjectID := gateway.Annotations[r.Config.gatewayProjectIDAnnotation()]
@@ -154,7 +162,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		logger.V(1).Info("Added finalizer and OpenStack resource binding to Gateway")
 		return ctrl.Result{Requeue: true}, nil
 	}
-	gatewayState, err := r.ensureGateway(ctx, &gateway)
+	gatewayResult, err := r.ensureGateway(ctx, &gateway)
 	if err != nil {
 		if errors.Is(err, errGatewayChanged) {
 			return ctrl.Result{}, err
@@ -166,6 +174,14 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 		logger.Error(err, "Could not ensure OpenStack resources for Gateway")
 		return ctrl.Result{}, err
 	}
+	if gatewayResult.Outcome.State == cloud.OutcomeProgressing {
+		message := providerProgressMessage(gatewayResult.Outcome, "Octavia resources for the Gateway are still progressing")
+		if err := r.setGatewayProgressing(ctx, &gateway, gatewayListener, message); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(gatewayResult.Outcome)}, nil
+	}
+	gatewayState := gatewayResult.State
 	logger.V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
 	return ctrl.Result{}, r.setGatewayProgrammed(ctx, &gateway, gatewayListener, gatewayState)
 }
@@ -173,13 +189,13 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gateway gatewayv1.Gat
 // cleanupGateway converges a previously valid Gateway to no OpenStack
 // resources before dropping this controller's finalizer. DeleteGateway is
 // identity-safe and idempotent, so it is also safe when creation never began.
-func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types.NamespacedName, expectedResourceVersion string) error {
+func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types.NamespacedName, expectedResourceVersion string) (ctrl.Result, error) {
 	var gateway gatewayv1.Gateway
 	if err := r.Get(ctx, gatewayKey, &gateway); err != nil {
-		return client.IgnoreNotFound(err)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if expectedResourceVersion != "" && gateway.ResourceVersion != expectedResourceVersion {
-		return apierrors.NewConflict(
+		return ctrl.Result{}, apierrors.NewConflict(
 			schema.GroupResource{Group: gatewayv1.GroupName, Resource: "gateways"},
 			gateway.Name,
 			errors.New("gateway changed before OpenStack resource cleanup"),
@@ -191,13 +207,20 @@ func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types
 	_, hasProjectIDBinding := gateway.Annotations[r.Config.gatewayProjectIDAnnotation()]
 	hasBinding := hasListenerPortBinding || hasClusterIDBinding || hasProjectIDBinding
 	if !hasFinalizer && !hasBinding {
-		return nil
+		return ctrl.Result{}, nil
 	}
 	if err := validateGatewayBinding(r.Config, &gateway); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
-	if err := r.deleteGateway(ctx, &gateway); err != nil {
-		return fmt.Errorf("delete OpenStack resources for Gateway: %w", err)
+	outcome, err := r.deleteGateway(ctx, &gateway)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete OpenStack resources for Gateway: %w", err)
+	}
+	if err := outcome.Validate(); err != nil {
+		return ctrl.Result{}, fmt.Errorf("validate Gateway deletion outcome: %w", err)
+	}
+	if outcome.State == cloud.OutcomeProgressing {
+		return ctrl.Result{RequeueAfter: providerProgressRequeueAfter(outcome)}, nil
 	}
 	metadataBase := gateway.DeepCopy()
 	controllerutil.RemoveFinalizer(&gateway, r.Config.gatewayFinalizer())
@@ -205,66 +228,73 @@ func (r *GatewayReconciler) cleanupGateway(ctx context.Context, gatewayKey types
 	delete(gateway.Annotations, r.Config.gatewayClusterIDAnnotation())
 	delete(gateway.Annotations, r.Config.gatewayProjectIDAnnotation())
 	if err := r.Patch(ctx, &gateway, optimisticMergeFrom(metadataBase)); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("remove Gateway resource binding: %w", err)
+		return ctrl.Result{}, fmt.Errorf("remove Gateway resource binding: %w", err)
 	}
-	return nil
+	return ctrl.Result{}, nil
 }
 
-func (r *GatewayReconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayState, error) {
+func (r *GatewayReconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayResult, error) {
 	release, err := acquireGatewayGraph(ctx, r.Coordinator, string(expected.UID))
 	if err != nil {
-		return cloud.GatewayState{}, fmt.Errorf("acquire Gateway graph: %w", err)
+		return cloud.GatewayResult{}, fmt.Errorf("acquire Gateway graph: %w", err)
 	}
 	defer release()
 
 	var current gatewayv1.Gateway
 	if err := r.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
-		return cloud.GatewayState{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
+		return cloud.GatewayResult{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
 	}
 	if current.UID != expected.UID || current.Generation != expected.Generation || !current.DeletionTimestamp.IsZero() {
-		return cloud.GatewayState{}, errGatewayChanged
+		return cloud.GatewayResult{}, errGatewayChanged
 	}
 	gatewayClass, managed, err := r.getGatewayClass(ctx, &current)
 	if err != nil {
-		return cloud.GatewayState{}, err
+		return cloud.GatewayResult{}, err
 	}
 	if !managed || gatewayClass == nil || gatewayClass.Spec.ParametersRef != nil {
-		return cloud.GatewayState{}, errGatewayChanged
+		return cloud.GatewayResult{}, errGatewayChanged
 	}
 	if !controllerutil.ContainsFinalizer(&current, r.Config.gatewayFinalizer()) {
-		return cloud.GatewayState{}, errGatewayChanged
+		return cloud.GatewayResult{}, errGatewayChanged
 	}
 	if err := validateGatewayBinding(r.Config, &current); err != nil {
-		return cloud.GatewayState{}, errors.Join(errGatewayChanged, err)
+		return cloud.GatewayResult{}, errors.Join(errGatewayChanged, err)
 	}
 	listener, validationErr := validateGateway(&current)
 	if validationErr != nil || current.Annotations[r.Config.gatewayListenerPortAnnotation()] != strconv.Itoa(int(listener.Port)) {
-		return cloud.GatewayState{}, errGatewayChanged
+		return cloud.GatewayResult{}, errGatewayChanged
 	}
 
-	return r.Provider.EnsureGateway(ctx, r.gatewaySpec(&current, listener))
+	result, err := r.Provider.EnsureGateway(ctx, r.gatewaySpec(&current, listener))
+	if err != nil {
+		return cloud.GatewayResult{}, err
+	}
+	if err := result.Outcome.Validate(); err != nil {
+		return cloud.GatewayResult{}, fmt.Errorf("validate Gateway provider outcome: %w", err)
+	}
+	return result, nil
 }
 
-func (r *GatewayReconciler) deleteGateway(ctx context.Context, expected *gatewayv1.Gateway) error {
+func (r *GatewayReconciler) deleteGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.Outcome, error) {
 	if r.APIReader == nil {
-		return errAPIReaderRequired
+		return cloud.Outcome{}, errAPIReaderRequired
 	}
 	release, err := acquireGatewayGraph(ctx, r.Coordinator, string(expected.UID))
 	if err != nil {
-		return fmt.Errorf("acquire Gateway graph: %w", err)
+		return cloud.Outcome{}, fmt.Errorf("acquire Gateway graph: %w", err)
 	}
 	defer release()
 
 	var current gatewayv1.Gateway
 	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
-		return errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
+		return cloud.Outcome{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
 	}
 	if current.UID != expected.UID || current.Generation != expected.Generation ||
 		current.ResourceVersion != expected.ResourceVersion || current.DeletionTimestamp.IsZero() != expected.DeletionTimestamp.IsZero() {
-		return errGatewayChanged
+		return cloud.Outcome{}, errGatewayChanged
 	}
 	if err := validateGatewayBinding(r.Config, &current); err != nil {
-		return errors.Join(errGatewayChanged, err)
+		return cloud.Outcome{}, errors.Join(errGatewayChanged, err)
 	}
 
 	return r.Provider.DeleteGateway(ctx, r.storedGatewayIdentity(&current))
@@ -507,16 +537,30 @@ func (r *GatewayReconciler) setGatewayFailureReason(ctx context.Context, gateway
 }
 
 func (r *GatewayReconciler) setGatewayOpenStackFailure(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, provisioningErr error) error {
-	attachedRoutes, err := r.attachedRouteCount(ctx, gateway, listener)
-	if err != nil {
-		return err
-	}
-	message := provisioningErr.Error()
 	gatewayReason := gatewayv1.GatewayReasonNoResources
 	listenerReason := gatewayv1.ListenerReasonPending
 	if errors.Is(provisioningErr, cloud.ErrOwnershipConflict) {
 		gatewayReason = gatewayv1.GatewayReasonInvalid
 		listenerReason = gatewayv1.ListenerReasonInvalid
+	}
+	return r.setGatewayProvisioningStatus(ctx, gateway, listener, gatewayReason, listenerReason, provisioningErr.Error())
+}
+
+func (r *GatewayReconciler) setGatewayProgressing(ctx context.Context, gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, message string) error {
+	return r.setGatewayProvisioningStatus(ctx, gateway, listener, gatewayv1.GatewayReasonNoResources, gatewayv1.ListenerReasonPending, message)
+}
+
+func (r *GatewayReconciler) setGatewayProvisioningStatus(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	listener *gatewayv1.Listener,
+	gatewayReason gatewayv1.GatewayConditionReason,
+	listenerReason gatewayv1.ListenerConditionReason,
+	message string,
+) error {
+	attachedRoutes, err := r.attachedRouteCount(ctx, gateway, listener)
+	if err != nil {
+		return err
 	}
 	base := gateway.DeepCopy()
 	setCondition(&gateway.Status.Conditions, condition(string(gatewayv1.GatewayConditionAccepted), metav1.ConditionTrue, string(gatewayv1.GatewayReasonAccepted), "Gateway configuration is accepted", gateway.Generation))

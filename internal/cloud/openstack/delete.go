@@ -19,6 +19,7 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
@@ -29,219 +30,128 @@ import (
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
-// DeleteRoute removes only resources carrying the complete Gateway and Route
-// identity. It is safe to retry after a partial deletion.
-func (p *Provider) DeleteRoute(ctx context.Context, value cloud.Identity) error {
+// DeleteRoute validates the complete route graph and removes at most one
+// resource in reverse dependency order.
+func (p *Provider) DeleteRoute(ctx context.Context, value cloud.Identity) (outcome cloud.Outcome, retErr error) {
+	defer func() {
+		retErr = classifyOpenStackError(retErr)
+	}()
+
+	ctx, cancel := p.operationContext(ctx)
+	defer cancel()
+
 	identity, err := p.identity(value)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, err
 	}
-	loadBalancer, err := p.findGatewayLoadBalancer(ctx, identity)
-	if err != nil || loadBalancer == nil {
-		return err
-	}
-	if !identity.MatchesGateway(loadBalancer.Tags, roleLoadBalancer) {
-		return fmt.Errorf("%w: load balancer %s", cloud.ErrOwnershipConflict, loadBalancer.ID)
-	}
-	loadBalancer, err = waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancer.ID, p.operationTimeout, p.pollInterval)
+	gateway, found, err := p.observeRouteGateway(ctx, identity, false)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, fmt.Errorf("observe Gateway before HTTPRoute deletion: %w", err)
 	}
-
-	poolTags, err := identity.RouteDiscoveryTags(rolePool)
+	if !found {
+		return cloud.ReadyOutcome(), nil
+	}
+	if gateway.outcome.State == cloud.OutcomeProgressing {
+		return gateway.outcome, nil
+	}
+	actual, err := p.observeRouteGraph(ctx, identity, gateway.state)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, err
 	}
-	pages, err := pools.List(p.clients.LoadBalancer, pools.ListOpts{LoadbalancerID: loadBalancer.ID, Tags: poolTags}).AllPages(ctx)
-	if err != nil {
-		return fmt.Errorf("list route pools for deletion: %w", err)
+	plan := buildRouteDeletionPlan(actual)
+	if len(plan) == 0 {
+		return cloud.ReadyOutcome(), nil
 	}
-	routePools, err := pools.ExtractPools(pages)
-	if err != nil {
-		return fmt.Errorf("extract route pools for deletion: %w", err)
+	desired := desiredRoute{
+		identity: identity,
+		spec: cloud.RouteSpec{
+			Identity: value,
+			Gateway:  gateway.state,
+		},
 	}
-	if len(routePools) > 1 {
-		return fmt.Errorf("%w: found duplicate pools during HTTPRoute deletion", cloud.ErrOwnershipConflict)
+	if err := p.executeRouteMutation(ctx, desired, plan[0]); err != nil {
+		return cloud.Outcome{}, err
 	}
-	if len(routePools) == 1 && !identity.MatchesRoute(routePools[0].Tags, rolePool) {
-		return fmt.Errorf("%w: pool %s", cloud.ErrOwnershipConflict, routePools[0].ID)
-	}
-
-	if err := p.deleteRoutePolicies(ctx, identity, loadBalancer.ID); err != nil {
-		return err
-	}
-	if len(routePools) == 0 {
-		return nil
-	}
-	pool := routePools[0]
-	if err := p.deletePoolChildren(ctx, identity, loadBalancer.ID, pool.ID); err != nil {
-		return err
-	}
-	if err := pools.Delete(ctx, p.clients.LoadBalancer, pool.ID).ExtractErr(); err != nil && !isNotFound(err) {
-		return fmt.Errorf("delete route pool %s: %w", pool.ID, err)
-	}
-	_, err = waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancer.ID, p.operationTimeout, p.pollInterval)
-	return err
-}
-
-func (p *Provider) deleteRoutePolicies(ctx context.Context, identity Identity, loadBalancerID string) error {
-	listenerPages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{LoadbalancerID: loadBalancerID}).AllPages(ctx)
-	if err != nil {
-		return fmt.Errorf("list listeners before route deletion: %w", err)
-	}
-	listenerItems, err := listeners.ExtractListeners(listenerPages)
-	if err != nil {
-		return fmt.Errorf("extract listeners before route deletion: %w", err)
-	}
-	for _, listener := range listenerItems {
-		if !identity.MatchesGateway(listener.Tags, roleListener) {
-			return fmt.Errorf("%w: listener %s", cloud.ErrOwnershipConflict, listener.ID)
-		}
-		pages, err := l7policies.List(p.clients.LoadBalancer, l7policies.ListOpts{ListenerID: listener.ID}).AllPages(ctx)
-		if err != nil {
-			return fmt.Errorf("list route policies: %w", err)
-		}
-		policies, err := l7policies.ExtractL7Policies(pages)
-		if err != nil {
-			return fmt.Errorf("extract route policies: %w", err)
-		}
-		for _, policy := range policies {
-			role := ""
-			for _, candidate := range []string{rolePolicyExact, rolePolicyPrefix} {
-				if identity.MatchesRoute(policy.Tags, candidate) {
-					role = candidate
-					break
-				} else if identity.MatchesRouteDiscovery(policy.Tags, candidate) {
-					return fmt.Errorf("%w: L7 policy %s has an incomplete or stale identity", cloud.ErrOwnershipConflict, policy.ID)
-				}
-			}
-			if role == "" {
-				continue
-			}
-			rulePages, err := l7policies.ListRules(p.clients.LoadBalancer, policy.ID, l7policies.ListRulesOpts{}).AllPages(ctx)
-			if err != nil {
-				return fmt.Errorf("list policy rules before deletion: %w", err)
-			}
-			rules, err := l7policies.ExtractRules(rulePages)
-			if err != nil {
-				return fmt.Errorf("extract policy rules before deletion: %w", err)
-			}
-			for _, rule := range rules {
-				if !identity.MatchesRoute(rule.Tags, roleRulePath) && !identity.MatchesRoute(rule.Tags, roleRuleHost) {
-					return fmt.Errorf("%w: rule %s beneath managed policy %s", cloud.ErrOwnershipConflict, rule.ID, policy.ID)
-				}
-				if err := l7policies.DeleteRule(ctx, p.clients.LoadBalancer, policy.ID, rule.ID).ExtractErr(); err != nil && !isNotFound(err) {
-					return fmt.Errorf("delete L7 rule %s: %w", rule.ID, err)
-				}
-				if _, err := waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancerID, p.operationTimeout, p.pollInterval); err != nil {
-					return err
-				}
-			}
-			if err := l7policies.Delete(ctx, p.clients.LoadBalancer, policy.ID).ExtractErr(); err != nil && !isNotFound(err) {
-				return fmt.Errorf("delete L7 policy %s: %w", policy.ID, err)
-			}
-			if _, err := waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancerID, p.operationTimeout, p.pollInterval); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (p *Provider) deletePoolChildren(ctx context.Context, identity Identity, loadBalancerID, poolID string) error {
-	monitorPages, err := monitors.List(p.clients.LoadBalancer, monitors.ListOpts{PoolID: poolID}).AllPages(ctx)
-	if err != nil {
-		return fmt.Errorf("list monitors before deletion: %w", err)
-	}
-	monitorItems, err := monitors.ExtractMonitors(monitorPages)
-	if err != nil {
-		return fmt.Errorf("extract monitors before deletion: %w", err)
-	}
-	for _, monitor := range monitorItems {
-		if !identity.MatchesRoute(monitor.Tags, roleMonitor) {
-			return fmt.Errorf("%w: monitor %s", cloud.ErrOwnershipConflict, monitor.ID)
-		}
-		if err := monitors.Delete(ctx, p.clients.LoadBalancer, monitor.ID).ExtractErr(); err != nil && !isNotFound(err) {
-			return fmt.Errorf("delete monitor %s: %w", monitor.ID, err)
-		}
-		if _, err := waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancerID, p.operationTimeout, p.pollInterval); err != nil {
-			return err
-		}
-	}
-
-	memberPages, err := pools.ListMembers(p.clients.LoadBalancer, poolID, pools.ListMembersOpts{}).AllPages(ctx)
-	if err != nil {
-		return fmt.Errorf("list members before deletion: %w", err)
-	}
-	members, err := pools.ExtractMembers(memberPages)
-	if err != nil {
-		return fmt.Errorf("extract members before deletion: %w", err)
-	}
-	for _, member := range members {
-		if !identity.MatchesRoute(member.Tags, roleMember) {
-			return fmt.Errorf("%w: member %s", cloud.ErrOwnershipConflict, member.ID)
-		}
-		if err := pools.DeleteMember(ctx, p.clients.LoadBalancer, poolID, member.ID).ExtractErr(); err != nil && !isNotFound(err) {
-			return fmt.Errorf("delete member %s: %w", member.ID, err)
-		}
-		if _, err := waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancerID, p.operationTimeout, p.pollInterval); err != nil {
-			return err
-		}
-	}
-	return nil
+	return p.progressingOutcome(plan[0].message()), nil
 }
 
 // DeleteGateway removes the complete controller-owned graph. Descendants are
 // validated and deleted explicitly before the load balancer is deleted without
 // cascade, so a resource added after validation cannot be swept up implicitly.
-func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identity) error {
+func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identity) (outcome cloud.Outcome, retErr error) {
+	defer func() {
+		retErr = classifyOpenStackError(retErr)
+	}()
+
+	ctx, cancel := p.operationContext(ctx)
+	defer cancel()
+
 	identity, err := p.identity(cloudIdentity)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, err
 	}
 	managedLoadBalancer, err := p.findGatewayLoadBalancer(ctx, identity)
-	if err != nil || managedLoadBalancer == nil {
-		return err
+	if err != nil {
+		return cloud.Outcome{}, err
+	}
+	if managedLoadBalancer == nil {
+		return cloud.ReadyOutcome(), nil
 	}
 	if !identity.MatchesGateway(managedLoadBalancer.Tags, roleLoadBalancer) {
-		return fmt.Errorf("%w: load balancer %s", cloud.ErrOwnershipConflict, managedLoadBalancer.ID)
+		return cloud.Outcome{}, fmt.Errorf("%w: load balancer %s", cloud.ErrOwnershipConflict, managedLoadBalancer.ID)
 	}
-	managedLoadBalancer, err = waitLoadBalancerActive(ctx, p.clients.LoadBalancer, managedLoadBalancer.ID, p.operationTimeout, p.pollInterval)
+	observation, err := p.observeLoadBalancerOnce(ctx, managedLoadBalancer.ID)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, err
+	}
+	switch observation.phase {
+	case loadBalancerPhaseAbsent:
+		return cloud.ReadyOutcome(), nil
+	case loadBalancerPhasePending:
+		return observation.outcome, nil
+	case loadBalancerPhaseActive:
+		managedLoadBalancer = observation.loadBalancer
+	default:
+		return cloud.Outcome{}, fmt.Errorf("observe deleting Gateway load balancer: unknown internal phase %d", observation.phase)
 	}
 	deletionPlan, err := p.buildGatewayDeletionPlan(ctx, identity, managedLoadBalancer.ID)
 	if err != nil {
-		return err
+		return cloud.Outcome{}, err
 	}
 	floatingIPPages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: managedLoadBalancer.VipPortID}).AllPages(ctx)
 	if err != nil {
-		return fmt.Errorf("list Floating IPs before Gateway deletion: %w", err)
+		return cloud.Outcome{}, fmt.Errorf("list Floating IPs before Gateway deletion: %w", err)
 	}
 	floatingIPs, err := floatingips.ExtractFloatingIPs(floatingIPPages)
 	if err != nil {
-		return fmt.Errorf("extract Floating IPs before Gateway deletion: %w", err)
+		return cloud.Outcome{}, fmt.Errorf("extract Floating IPs before Gateway deletion: %w", err)
 	}
 	for _, floatingIP := range floatingIPs {
 		if err := p.validateFloatingIPProject(floatingIP.ID, floatingIP.ProjectID, floatingIP.TenantID); err != nil {
-			return err
+			return cloud.Outcome{}, err
 		}
 		if !identity.MatchesGatewayDescription(floatingIP.Description, roleFloatingIP) {
-			return fmt.Errorf("%w: Floating IP %s", cloud.ErrOwnershipConflict, floatingIP.ID)
+			return cloud.Outcome{}, fmt.Errorf("%w: Floating IP %s", cloud.ErrOwnershipConflict, floatingIP.ID)
 		}
 	}
-	if err := p.executeGatewayDeletionPlan(ctx, managedLoadBalancer.ID, deletionPlan); err != nil {
-		return err
-	}
-	for _, floatingIP := range floatingIPs {
-		if err := floatingips.Delete(ctx, p.clients.Network, floatingIP.ID).ExtractErr(); err != nil && !isNotFound(err) {
-			return fmt.Errorf("delete Floating IP %s: %w", floatingIP.ID, err)
+	if len(deletionPlan) != 0 {
+		step := deletionPlan[0]
+		if err := p.executeGatewayDeletionStep(ctx, step); err != nil {
+			return cloud.Outcome{}, err
 		}
+		return p.progressingOutcome(fmt.Sprintf("Deleting controller-owned %s", step.resource)), nil
+	}
+	if len(floatingIPs) != 0 {
+		sort.Slice(floatingIPs, func(i, j int) bool { return floatingIPs[i].ID < floatingIPs[j].ID })
+		if err := floatingips.Delete(ctx, p.clients.Network, floatingIPs[0].ID).ExtractErr(); err != nil && !isNotFound(err) {
+			return cloud.Outcome{}, fmt.Errorf("delete Floating IP %s: %w", floatingIPs[0].ID, err)
+		}
+		return p.progressingOutcome("Deleting controller-owned Floating IP"), nil
 	}
 	if err := loadbalancers.Delete(ctx, p.clients.LoadBalancer, managedLoadBalancer.ID, nil).ExtractErr(); err != nil && !isNotFound(err) {
-		return fmt.Errorf("delete load balancer %s without cascade: %w", managedLoadBalancer.ID, err)
+		return cloud.Outcome{}, fmt.Errorf("delete load balancer %s without cascade: %w", managedLoadBalancer.ID, classifyOctaviaMutationError(err))
 	}
-	return waitLoadBalancerDeleted(ctx, p.clients.LoadBalancer, managedLoadBalancer.ID, p.operationTimeout, p.pollInterval)
+	return p.progressingOutcome("Deleting Octavia load balancer"), nil
 }
 
 type gatewayDeletionResource string
@@ -268,6 +178,7 @@ type gatewayDeletionPlan []gatewayDeletionStep
 // parent; callers can therefore execute the plan linearly and safely retry it.
 func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identity, loadBalancerID string) (gatewayDeletionPlan, error) {
 	plan := gatewayDeletionPlan{}
+	listenerSteps := gatewayDeletionPlan{}
 	listenerPages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{LoadbalancerID: loadBalancerID}).AllPages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list listeners before Gateway deletion: %w", err)
@@ -276,6 +187,7 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 	if err != nil {
 		return nil, fmt.Errorf("extract listeners before Gateway deletion: %w", err)
 	}
+	sort.Slice(listenerList, func(i, j int) bool { return listenerList[i].ID < listenerList[j].ID })
 	for _, listener := range listenerList {
 		if !identity.MatchesGateway(listener.Tags, roleListener) {
 			return nil, fmt.Errorf("%w: listener %s", cloud.ErrOwnershipConflict, listener.ID)
@@ -288,6 +200,12 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		if err != nil {
 			return nil, fmt.Errorf("extract L7 policies beneath listener %s before Gateway deletion: %w", listener.ID, err)
 		}
+		sort.Slice(policyList, func(i, j int) bool {
+			if policyList[i].Position == policyList[j].Position {
+				return policyList[i].ID < policyList[j].ID
+			}
+			return policyList[i].Position < policyList[j].Position
+		})
 		for _, policy := range policyList {
 			if !matchesAnyGatewayRole(identity, policy.Tags, rolePolicyExact, rolePolicyPrefix) {
 				return nil, fmt.Errorf("%w: L7 policy %s", cloud.ErrOwnershipConflict, policy.ID)
@@ -300,6 +218,7 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			if err != nil {
 				return nil, fmt.Errorf("extract L7 rules beneath policy %s before Gateway deletion: %w", policy.ID, err)
 			}
+			sort.Slice(ruleList, func(i, j int) bool { return ruleList[i].ID < ruleList[j].ID })
 			for _, rule := range ruleList {
 				if !matchesAnyGatewayRole(identity, rule.Tags, roleRulePath, roleRuleHost) {
 					return nil, fmt.Errorf("%w: L7 rule %s", cloud.ErrOwnershipConflict, rule.ID)
@@ -315,7 +234,7 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 				resourceID: policy.ID,
 			})
 		}
-		plan = append(plan, gatewayDeletionStep{
+		listenerSteps = append(listenerSteps, gatewayDeletionStep{
 			resource:   gatewayDeletionListener,
 			resourceID: listener.ID,
 		})
@@ -329,6 +248,7 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 	if err != nil {
 		return nil, fmt.Errorf("extract pools before Gateway deletion: %w", err)
 	}
+	sort.Slice(poolList, func(i, j int) bool { return poolList[i].ID < poolList[j].ID })
 	for _, pool := range poolList {
 		if !identity.MatchesGateway(pool.Tags, rolePool) {
 			return nil, fmt.Errorf("%w: pool %s", cloud.ErrOwnershipConflict, pool.ID)
@@ -341,6 +261,7 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		if err != nil {
 			return nil, fmt.Errorf("extract health monitors beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
+		sort.Slice(monitorList, func(i, j int) bool { return monitorList[i].ID < monitorList[j].ID })
 		for _, monitor := range monitorList {
 			if !identity.MatchesGateway(monitor.Tags, roleMonitor) {
 				return nil, fmt.Errorf("%w: monitor %s", cloud.ErrOwnershipConflict, monitor.ID)
@@ -359,6 +280,15 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		if err != nil {
 			return nil, fmt.Errorf("extract members beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
+		sort.Slice(memberList, func(i, j int) bool {
+			if memberList[i].Address == memberList[j].Address {
+				if memberList[i].ProtocolPort == memberList[j].ProtocolPort {
+					return memberList[i].ID < memberList[j].ID
+				}
+				return memberList[i].ProtocolPort < memberList[j].ProtocolPort
+			}
+			return memberList[i].Address < memberList[j].Address
+		})
 		for _, member := range memberList {
 			if !identity.MatchesGateway(member.Tags, roleMember) {
 				return nil, fmt.Errorf("%w: member %s", cloud.ErrOwnershipConflict, member.ID)
@@ -374,20 +304,14 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			resourceID: pool.ID,
 		})
 	}
+	plan = append(plan, listenerSteps...)
 	return plan, nil
 }
 
-// executeGatewayDeletionPlan has one execution loop. The plan builder owns the
-// graph traversal and ordering, while this function owns delete/retry behavior.
-func (p *Provider) executeGatewayDeletionPlan(ctx context.Context, loadBalancerID string, plan gatewayDeletionPlan) error {
-	for _, step := range plan {
-		deleteErr := p.deleteGatewayResource(ctx, step)
-		if deleteErr != nil && !isNotFound(deleteErr) {
-			return fmt.Errorf("delete %s %s: %w", step.resource, step.resourceID, deleteErr)
-		}
-		if _, err := waitLoadBalancerActive(ctx, p.clients.LoadBalancer, loadBalancerID, p.operationTimeout, p.pollInterval); err != nil {
-			return fmt.Errorf("wait for load balancer %s after deleting %s %s: %w", loadBalancerID, step.resource, step.resourceID, err)
-		}
+func (p *Provider) executeGatewayDeletionStep(ctx context.Context, step gatewayDeletionStep) error {
+	deleteErr := p.deleteGatewayResource(ctx, step)
+	if deleteErr != nil && !isNotFound(deleteErr) {
+		return fmt.Errorf("delete %s %s: %w", step.resource, step.resourceID, classifyOctaviaMutationError(deleteErr))
 	}
 	return nil
 }

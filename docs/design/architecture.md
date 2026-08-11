@@ -240,11 +240,11 @@ transition, observe it for a bounded period, and return a jittered
 `RequeueAfter` while progress continues. It must not hold a worker until an
 operation that takes several minutes finishes.
 
-No mutation is issued while the load balancer is `PENDING_*`. Retryable API
-failure, rate limiting, quota exhaustion, terminal validation, Octavia
-`ERROR`, and ownership conflict are distinct outcomes. Timeouts and retries are
-bounded, and a later reconciliation always observes the resource again before
-acting.
+No mutation is issued while the load balancer is `PENDING_*`. Request timeout,
+retryable API failure, rate limiting, quota exhaustion, terminal validation,
+Octavia `ERROR`, and ownership conflict are distinct outcomes. Timeouts and
+retries are bounded, and a later reconciliation always observes the resource
+again before acting.
 
 ### Efficient Kubernetes event handling
 
@@ -466,8 +466,8 @@ Until that contract is implemented, the controller rejects a Gateway
 - Unsupported configuration is terminal until an input event changes it.
 - Dependency readiness relies on watches. External asynchronous progress uses
   bounded requeue intervals.
-- Authentication, authorization, quota, rate limiting, pending, provider
-  failure, and ownership conflict remain distinguishable.
+- Authentication, authorization, quota, rate limiting, timeout, pending,
+  provider failure, and ownership conflict remain distinguishable.
 - If a resource whose ownership has been verified is deleted externally,
   recreate it safely unless its Kubernetes owner is being deleted.
 - A collision or incomplete identity is terminal and never triggers adoption.

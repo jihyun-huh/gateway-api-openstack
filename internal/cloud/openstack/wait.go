@@ -95,12 +95,4 @@ func IsNotFound(err error) bool {
 	return gophercloud.ResponseCodeIs(err, http.StatusNotFound)
 }
 
-func waitLoadBalancerActive(ctx context.Context, client *gophercloud.ServiceClient, id string, timeout, interval time.Duration) (*loadbalancers.LoadBalancer, error) {
-	return WaitLoadBalancerActive(ctx, client, id, timeout, interval)
-}
-
-func waitLoadBalancerDeleted(ctx context.Context, client *gophercloud.ServiceClient, id string, timeout, interval time.Duration) error {
-	return WaitLoadBalancerDeleted(ctx, client, id, timeout, interval)
-}
-
 func isNotFound(err error) bool { return IsNotFound(err) }

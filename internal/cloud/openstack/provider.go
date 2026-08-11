@@ -19,6 +19,7 @@ limitations under the License.
 package openstack
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -39,8 +40,8 @@ const (
 	roleRuleHost     = "l7-rule-host"
 )
 
-// ProviderConfig controls how long an asynchronous Octavia operation may
-// keep one reconciliation waiting.
+// ProviderConfig bounds one provider call and controls how soon the controller
+// observes an asynchronous Octavia operation again.
 type ProviderConfig struct {
 	OperationTimeout time.Duration
 	PollInterval     time.Duration
@@ -99,6 +100,17 @@ func (p *Provider) validateFloatingIPProject(id, projectID, tenantID string) err
 		return fmt.Errorf("%w: Floating IP %s belongs to project %s, not authenticated project %s", cloud.ErrOwnershipConflict, id, projectID, p.clients.ProjectID)
 	}
 	return nil
+}
+
+func (p *Provider) validateOptionalProject(resource, id, projectID string) error {
+	if projectID != "" && projectID != p.clients.ProjectID {
+		return fmt.Errorf("%w: %s %s belongs to project %s, not authenticated project %s", cloud.ErrOwnershipConflict, resource, id, projectID, p.clients.ProjectID)
+	}
+	return nil
+}
+
+func (p *Provider) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, p.operationTimeout)
 }
 
 func boolPointer(value bool) *bool { return &value }

@@ -31,41 +31,80 @@ import (
 
 type recordingProvider struct {
 	gatewaySpecs     []cloud.GatewaySpec
+	gatewayResult    *cloud.GatewayResult
 	gatewayErr       error
+	gatewayGetResult *cloud.GatewayResult
+	gatewayGetFound  *bool
+	gatewayGetErr    error
+	gatewayDeleteOut *cloud.Outcome
 	gatewayDeleteErr error
 	gatewayGets      int
 	routeSpecs       []cloud.RouteSpec
+	routeResult      *cloud.RouteResult
+	routeErr         error
+	routeDeleteOut   *cloud.Outcome
 	routeDeleteErr   error
 	deletedGateways  []cloud.Identity
 	deletedRoutes    []cloud.Identity
 }
 
-func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewaySpec) (cloud.GatewayState, error) {
+func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewaySpec) (cloud.GatewayResult, error) {
 	p.gatewaySpecs = append(p.gatewaySpecs, spec)
 	if p.gatewayErr != nil {
-		return cloud.GatewayState{}, p.gatewayErr
+		return cloud.GatewayResult{}, p.gatewayErr
 	}
-	return cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}, nil
+	if p.gatewayResult != nil {
+		return *p.gatewayResult, nil
+	}
+	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), nil
 }
 
-func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayState, bool, error) {
+func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
 	p.gatewayGets++
-	return cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}, true, nil
+	if p.gatewayGetErr != nil {
+		return cloud.GatewayResult{}, false, p.gatewayGetErr
+	}
+	found := true
+	if p.gatewayGetFound != nil {
+		found = *p.gatewayGetFound
+	}
+	if p.gatewayGetResult != nil {
+		return *p.gatewayGetResult, found, nil
+	}
+	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), found, nil
 }
 
-func (p *recordingProvider) DeleteGateway(_ context.Context, identity cloud.Identity) error {
+func (p *recordingProvider) DeleteGateway(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
 	p.deletedGateways = append(p.deletedGateways, identity)
-	return p.gatewayDeleteErr
+	if p.gatewayDeleteErr != nil {
+		return cloud.Outcome{}, p.gatewayDeleteErr
+	}
+	if p.gatewayDeleteOut != nil {
+		return *p.gatewayDeleteOut, nil
+	}
+	return cloud.ReadyOutcome(), nil
 }
 
-func (p *recordingProvider) EnsureRoute(_ context.Context, spec cloud.RouteSpec) (cloud.RouteState, error) {
+func (p *recordingProvider) EnsureRoute(_ context.Context, spec cloud.RouteSpec) (cloud.RouteResult, error) {
 	p.routeSpecs = append(p.routeSpecs, spec)
-	return cloud.RouteState{PoolID: "pool-1"}, nil
+	if p.routeErr != nil {
+		return cloud.RouteResult{}, p.routeErr
+	}
+	if p.routeResult != nil {
+		return *p.routeResult, nil
+	}
+	return cloud.RouteReadyResult(cloud.RouteState{PoolID: "pool-1"}), nil
 }
 
-func (p *recordingProvider) DeleteRoute(_ context.Context, identity cloud.Identity) error {
+func (p *recordingProvider) DeleteRoute(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
 	p.deletedRoutes = append(p.deletedRoutes, identity)
-	return p.routeDeleteErr
+	if p.routeDeleteErr != nil {
+		return cloud.Outcome{}, p.routeDeleteErr
+	}
+	if p.routeDeleteOut != nil {
+		return *p.routeDeleteOut, nil
+	}
+	return cloud.ReadyOutcome(), nil
 }
 
 func testConfig() Config {

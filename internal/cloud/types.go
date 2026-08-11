@@ -20,13 +20,8 @@ package cloud
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
-
-// ErrOwnershipConflict means a resource exists but does not carry the
-// complete immutable identity expected by this controller.
-var ErrOwnershipConflict = errors.New("OpenStack resource ownership conflict")
 
 // Identity is the immutable ownership anchor for a Gateway and its resources.
 // Route fields are set only for resources whose lifecycle is owned by one
@@ -116,11 +111,11 @@ type RouteState struct {
 // Ensure operations must be idempotent, and Delete operations must verify the
 // complete identity before removing anything.
 type Provider interface {
-	EnsureGateway(context.Context, GatewaySpec) (GatewayState, error)
-	GetGateway(context.Context, Identity) (GatewayState, bool, error)
-	DeleteGateway(context.Context, Identity) error
-	EnsureRoute(context.Context, RouteSpec) (RouteState, error)
-	DeleteRoute(context.Context, Identity) error
+	EnsureGateway(context.Context, GatewaySpec) (GatewayResult, error)
+	GetGateway(context.Context, Identity) (GatewayResult, bool, error)
+	DeleteGateway(context.Context, Identity) (Outcome, error)
+	EnsureRoute(context.Context, RouteSpec) (RouteResult, error)
+	DeleteRoute(context.Context, Identity) (Outcome, error)
 }
 
 // ValidateGatewayIdentity verifies the common Gateway ownership tuple.
