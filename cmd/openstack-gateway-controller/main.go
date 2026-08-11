@@ -27,6 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
@@ -149,6 +151,7 @@ func run(ctx context.Context) error {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(discoveryv1.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 
 	restConfig := ctrl.GetConfigOrDie()
@@ -180,7 +183,7 @@ func run(ctx context.Context) error {
 	}
 	graphCoordinator := &controller.GraphCoordinator{}
 	eventRecorder := manager.GetEventRecorder("gateway-api-openstack-controller")
-	if err := (&controller.GatewayClassReconciler{Client: manager.GetClient(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
+	if err := (&controller.GatewayClassReconciler{Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up GatewayClass controller: %w", err)
 	}
 	gatewayReconciler := &controller.GatewayReconciler{
@@ -232,7 +235,7 @@ func requireGatewayAPIs(restConfig *rest.Config) error {
 	}
 	resourceList, err := discoveryClient.ServerResourcesForGroupVersion(gatewayv1.GroupVersion.String())
 	if err != nil {
-		return fmt.Errorf("required Gateway API v1 CRDs are unavailable; install Gateway API Standard v1.6.1 before starting the controller: %w", err)
+		return fmt.Errorf("required Gateway API v1 CRDs are unavailable; install Gateway API Standard %s before starting the controller: %w", gatewayconsts.BundleVersion, err)
 	}
 	availableResources := make([]string, 0, len(resourceList.APIResources))
 	for _, resource := range resourceList.APIResources {
@@ -240,7 +243,7 @@ func requireGatewayAPIs(restConfig *rest.Config) error {
 	}
 	for _, required := range []string{"gatewayclasses", "gateways", "httproutes"} {
 		if !slices.Contains(availableResources, required) {
-			return fmt.Errorf("required Gateway API resource %s is missing from %s; install Gateway API Standard v1.6.1", required, gatewayv1.GroupVersion)
+			return fmt.Errorf("required Gateway API resource %s is missing from %s; install Gateway API Standard %s", required, gatewayv1.GroupVersion, gatewayconsts.BundleVersion)
 		}
 	}
 	return nil

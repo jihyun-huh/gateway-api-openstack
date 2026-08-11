@@ -28,6 +28,7 @@ import (
 )
 
 const (
+	indexGatewayClassByController   = "spec.controllerName"
 	indexGatewayByClass             = "spec.gatewayClassName"
 	indexHTTPRouteByParentGateway   = "spec.parentGateway"
 	indexHTTPRouteByStatusGateway   = "status.parentGateway"
@@ -58,6 +59,17 @@ func SetupIndexes(ctx context.Context, indexer client.FieldIndexer, config Confi
 
 func controllerFieldIndexes(config Config) []controllerFieldIndex {
 	return []controllerFieldIndex{
+		{
+			object: &gatewayv1.GatewayClass{},
+			field:  indexGatewayClassByController,
+			extract: func(object client.Object) []string {
+				gatewayClass, ok := object.(*gatewayv1.GatewayClass)
+				if !ok || gatewayClass.Spec.ControllerName == "" {
+					return nil
+				}
+				return []string{string(gatewayClass.Spec.ControllerName)}
+			},
+		},
 		{
 			object: &gatewayv1.Gateway{},
 			field:  indexGatewayByClass,
@@ -210,7 +222,7 @@ func backendServiceKeys(route *gatewayv1.HTTPRoute) []string {
 	keys := make(map[string]struct{})
 	for _, rule := range route.Spec.Rules {
 		for _, backend := range rule.BackendRefs {
-			if !isCoreServiceBackend(backend.BackendRef.BackendObjectReference) || backend.Name == "" {
+			if !isCoreServiceBackend(backend.BackendObjectReference) || backend.Name == "" {
 				continue
 			}
 			namespace := route.Namespace
@@ -237,7 +249,7 @@ func isCoreServiceBackend(backend gatewayv1.BackendObjectReference) bool {
 func hasCoreServiceBackend(route *gatewayv1.HTTPRoute) bool {
 	for _, rule := range route.Spec.Rules {
 		for _, backend := range rule.BackendRefs {
-			if isCoreServiceBackend(backend.BackendRef.BackendObjectReference) {
+			if isCoreServiceBackend(backend.BackendObjectReference) {
 				return true
 			}
 		}

@@ -270,8 +270,24 @@ behavior has passed. Gateway API does not provide a declaration for only this
 controller's smaller HTTPRoute subset. `ReferenceGrant` is included in
 `supportedFeatures` only after all combinations with the other reported
 features pass. If NodePort remains the only stable backend path, report partial
-GATEWAY-HTTP conformance. Report whether the installed Gateway API CRD version
-is supported through the standard `SupportedVersion` condition.
+GATEWAY-HTTP conformance.
+
+The GatewayClass controller checks the bundle version annotation on every
+installed Gateway API CRD. It reports `SupportedVersion=True` only when the
+required CRDs are present and the complete bundle matches v1.6.1. A missing or
+mixed annotation makes the class `Accepted=False` with reason
+`UnsupportedVersion`. Reconciliation leaves an existing OpenStack graph in
+place, blocks further provisioning and repair, and still allows deletion and
+controller handoff cleanup. CRD watches resume normal reconciliation after the
+installed bundle becomes supported again.
+
+Both the CRD watch and mutation checks use metadata rather than downloading
+every CRD schema. Mutation checks also confirm live controller ownership. A
+slow retry on the GatewayClass lets it recover even when a brief CRD update does
+not produce another watch event. Dependent objects use that fallback only when
+they observe a live mismatch before the class status changes. HTTPRoute cleanup
+rebuilds the current attachment, backend, endpoint, Node, and route selection
+decision before it removes a graph that still has a managed parent.
 
 Before Phase 3 implementation begins, accept ADRs for:
 

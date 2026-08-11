@@ -26,7 +26,7 @@ import (
 
 var (
 	errEmptyGatewayUID          = errors.New("gateway UID is empty")
-	errGraphCoordinatorRequired = errors.New("Gateway graph coordinator is required")
+	errGraphCoordinatorRequired = errors.New("gateway graph coordinator is required")
 )
 
 // GraphCoordinator serializes changes to the OpenStack graph owned by a

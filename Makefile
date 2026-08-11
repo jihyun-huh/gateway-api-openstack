@@ -36,6 +36,10 @@ container-build: ## Build the controller container image.
 test: ## Run unit tests.
 	$(GO) test ./...
 
+.PHONY: test-race
+test-race: ## Run unit tests with the race detector.
+	$(GO) test -race ./...
+
 .PHONY: fmt
 fmt: ## Format Go source files.
 	$(GOFMT) -w $$(find . -name '*.go' -type f)

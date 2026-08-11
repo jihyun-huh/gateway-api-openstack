@@ -63,6 +63,34 @@ on tested OpenStack topologies.
 9. **OpenStack access uses Gophercloud.** Controller code does not shell out to
    the OpenStack CLI.
 
+### Installed Gateway API version
+
+The controller is built and tested against the Gateway API v1.6.1 Standard
+Channel. It reads the `gateway.networking.k8s.io/bundle-version` annotation from
+the installed Gateway API CRDs and records the result in the GatewayClass
+`SupportedVersion` condition. Missing annotations, missing required CRDs, and
+mixed bundle versions are unsupported.
+
+An unsupported bundle makes the GatewayClass unaccepted and stops new
+bindings, OpenStack provisioning, and drift repair. The controller does not
+delete a bound graph merely because CRDs are being upgraded. Explicit deletion
+and cleanup after a controller handoff still use the stored identity and remain
+available. A CRD watch starts normal reconciliation again when the complete
+bundle matches the supported version.
+
+The normal path uses the GatewayClass condition as its cached signal. Before a
+new binding or an OpenStack mutation, the controller checks an uncached,
+metadata-only view of the CRDs and verifies the live GatewayClass ownership.
+The CRD informer also keeps metadata only, so large validation schemas are not
+duplicated in the controller cache. An unsupported GatewayClass checks the
+bundle again on a slow, stable interval. A Gateway or HTTPRoute uses the same
+fallback only when its live check sees a mismatch before the class condition
+changes. This avoids a cluster-wide CRD read from every dependent object during
+a long upgrade.
+Cleanup also rebuilds the live route decision before deleting an active graph,
+so a stale Gateway, Service, endpoint, Node, or competing Route does not turn
+cache lag into a deletion.
+
 ## Ownership contract
 
 ### cloud-provider-openstack owns
