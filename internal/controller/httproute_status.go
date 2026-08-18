@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -280,9 +279,6 @@ func statusForRouteBuildError(err error) routeReconcileStatus {
 		default:
 			return rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), buildError.message)
 		}
-	}
-	if strings.Contains(err.Error(), "no ready endpoints") || strings.Contains(err.Error(), "no ready Nodes") {
-		return pendingRouteStatus(err.Error())
 	}
 	return rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), err.Error())
 }

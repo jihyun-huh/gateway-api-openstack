@@ -123,7 +123,7 @@ func (r *HTTPRouteReconciler) buildRouteSpecWithReader(
 		backendNamespace = string(*backend.Namespace)
 	}
 	if backendNamespace != route.Namespace {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 3")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
 	}
 	if backend.Port == nil {
 		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
