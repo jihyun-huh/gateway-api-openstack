@@ -4,6 +4,12 @@ title: "[Feature]: "
 labels:
   - kind/feature
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the design proposal form when the request changes ownership,
+        immutable identity, graph writing, a public API, or conformance claims.
+        Those changes need an accepted ADR before implementation merges.
   - type: textarea
     id: problem
     attributes:

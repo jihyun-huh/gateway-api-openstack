@@ -26,8 +26,9 @@ assignees: ""
 - [ ] The snapshot contains Linux `amd64` and `arm64` archives with all three
       binaries, `LICENSE`, `README.md`, and `SECURITY.md`.
 - [ ] `checksums.txt` verifies every generated archive.
-- [ ] README, the getting started guide, ROADMAP, security policy, and Amphora
-      compatibility evidence are current for this release.
+- [ ] README, the getting started guide, ROADMAP, support and security policies,
+      governance, and Amphora compatibility evidence are current for this
+      release.
 - [ ] Exact tested Kubernetes and Gateway API versions, OpenStack and Octavia
       releases, negotiated API microversions, Amphora topology, CNI,
       kube-proxy mode, and relationships among the VIP, member, and external

@@ -4,9 +4,11 @@ This roadmap sets the order of work for gateway-api-openstack. It is a planning
 document, not a release promise. A feature moves forward only after its
 ownership, failure behavior, and test evidence are clear.
 
-The current development stage is **Phase 2**. The constrained Phase 1
-implementation is complete in the source tree, but the project remains
-pre-alpha. Completing an implementation phase does not by itself establish
+The current development stage is **closing the Phase 2 gates**. The constrained
+Phase 1 implementation and most Phase 2 reliability foundations are present in
+the source tree, but the project remains pre-alpha. The complete Gateway graph
+writer, OpenStack controller evidence, conformance gap report, and required
+ADRs are still open. Completing code work does not by itself establish
 production readiness, support, or conformance.
 
 Each controller release pins the Gateway API version it supports. The current
@@ -66,21 +68,57 @@ proposed text. The table below summarizes each phase and its exit criteria.
 | --- | --- | --- | --- |
 | 0 — Feasibility | Historical | Prove the required Amphora primitives and ownership boundary | Capability probe retained, with later phases still requiring their ADRs |
 | 1 — HTTP slice | Implemented (evidence pending) | One Gateway, listener, route, and NodePort backend | Published traffic, restart, no-op, deletion, and leak evidence |
-| 2 — Reconciliation | In progress | One efficient writer for each Gateway graph that recovers after a restart | Fault, race, upgrade, API efficiency, and documented conformance gaps |
+| 2 — Reconciliation | Foundations implemented; gates open | One efficient writer for each Gateway graph that recovers after a restart | Graph writer contract, fault, race, upgrade, API efficiency, and documented conformance gaps |
 | 3 — Class API | Planned | Typed, validated topology configuration | Reviewed API contract, migration rules, and generated CRD |
 | 4 — Connectivity | Planned | Deterministic address, network, and security handling | Results from tests in OpenStack without adopting foreign network resources |
 | 5 — HTTP/HTTPS | Planned | Multiple listeners, route compilation, and terminated HTTPS | Pinned conformance results and safe Barbican lifecycle |
 | 6 — Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible conformance report |
 | 7 — Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, support policy, and release evidence |
 
+Phase 2 implementation continues while the Phase 1 environment report remains
+an open graduation gate. The phase number describes the active engineering
+work, not evidence that every earlier exit condition has passed.
+
+## Near-term sequence
+
+The next work has three tracks. They should move together, but none of them is
+a reason to start the Phase 3 CRD early.
+
+1. **Prove the current slice.** Publish the first controller traffic, restart,
+   no-op, fault, deletion, and leak report from a disposable Amphora
+   environment. Exercise blocked finalization and the ownership audit there.
+2. **Finish the design boundary.** Accept the graph writer and public identity
+   ADRs, replace the two cloud mutation paths with one complete desired Gateway
+   graph, and publish the pinned GATEWAY-HTTP gap analysis.
+3. **Make outside testing practical.** Keep contributor, governance, support,
+   and ADR guidance current. After the public identity and registry are
+   decided, publish a versioned pre-alpha image pinned by digest. It is an
+   evaluation artifact, not a supported release.
+
+The detailed implementation and refactoring backlog is in
+[docs/development-priorities.md](docs/development-priorities.md).
+
+Community maturity is tracked separately from feature phases. The project
+should build a record of independent reviews, public decisions, adopter tests,
+and maintainers from more than one organization. An entry in the Gateway API
+implementation list is a near-term ecosystem goal. A Kubernetes SIG or
+OpenInfra home is a later community decision and is not promised by this
+roadmap.
+
 ## Evidence and compatibility rules
 
-Compatibility applies to a particular release and environment. A report must
-record the Kubernetes, Gateway API, OpenStack, and Octavia versions, including
-the negotiated API microversions. It must also describe the Amphora topology,
-CNI and
-kube-proxy mode, network relationships, enabled services, roles, quotas, and
-the tests that passed.
+Compatibility applies to a particular release and environment. The canonical
+environment fields and report formats are in
+[docs/providers/compatibility.md](docs/providers/compatibility.md) and
+[docs/reports](docs/reports/README.md). A report must identify the controller
+artifact, cloud and cluster versions, Amphora topology, network path, and exact
+tests well enough for another operator to understand its scope.
+
+Use evidence terms consistently. `Probed` means an API primitive worked in one
+environment. `Verified` means a controller revision passed named tests in one
+recorded environment. `Supported` means a release and environment are covered
+by a maintained compatibility and support policy. `Conformant` means the
+pinned upstream suite passed for the claimed profile.
 
 `GatewayClass.status.supportedFeatures` is a runtime support declaration
 consumed by the conformance suite, not a copy of an Octavia feature list or a
@@ -150,7 +188,8 @@ graduate without that report.
 
 ## Phase 2 - Safe and efficient reconciliation
 
-**Status:** In progress
+**Status:** Reliability foundations implemented — graph writer and exit
+evidence remain open
 
 **Milestone:** `v0.2.0`
 
@@ -164,6 +203,13 @@ controller will use the Gateway UID to identify and serialize changes to that
 graph. Route reconcilers may remain responsible for attachment validation and
 status, but one writer will compile and update listener policy order from the
 complete desired graph.
+
+The current `GraphCoordinator` serializes the separate Gateway and HTTPRoute
+provider calls inside the active process. This closes the overlapping mutation
+race, but it is not the complete graph writer described here. Gateway and
+HTTPRoute still build and apply different cloud specifications. The graph
+writer ADR must define route fragment ownership and restart behavior before
+those paths are combined.
 
 The control loop follows these rules:
 
@@ -257,6 +303,12 @@ EndpointSlice. Watch handlers will use indexed reads instead of listing every
 object. Node changes will enqueue only affected managed NodePort backends, and
 the controller will coalesce event bursts into one update to the member set.
 
+Most indexes and watch mappers are implemented. The Node mapper still starts
+from all indexed Routes with a Service backend before checking which ones are
+affected. Scale tests must count reads and effective reconciles during Node and
+EndpointSlice bursts before the narrower fan-out and coalescing claims are
+considered complete.
+
 The controller reuses shared OpenStack clients. Keystone, Octavia, and Neutron
 requests use one configurable rate limit for the controller process. Bounded
 contexts limit provider operations, and adapter list calls consume every page.
@@ -301,18 +353,22 @@ decision before it removes a graph that still has a managed parent.
 Before Phase 3 implementation begins, accept ADRs for:
 
 1. the graph writer keyed by Gateway UID and ownership of route fragments
-2. the canonical controller name and an API domain controlled by the project
+2. the canonical controller name, module and repository ownership, artifact
+   registry, migration policy, and an API domain controlled by the project
 3. GatewayClass and any parameter snapshot for individual Gateways, including
    merge, propagation, and migration semantics
 4. shared ownership, if any, of the `security_groups` field on worker Neutron
    ports
 5. the compatibility and deprecation policy for project CRDs
 
-Also publish and review the contribution guide, code of conduct, support policy,
-and ADR process before Phase 3 begins.
+Keep the contribution guide, code of conduct, support policy, governance,
+OWNERS roles, and ADR process reviewed and aligned with actual project
+practice before Phase 3 begins.
 
 ### Phase 2 exit criteria
 
+- One writer compiles and applies the complete desired Gateway graph; Gateway
+  and HTTPRoute reconciliation do not issue independent graph mutations.
 - No two reconciles issue overlapping mutations to the same Gateway graph.
 - A converged reconcile performs zero OpenStack mutations and no semantic
   status patch.
@@ -329,6 +385,8 @@ and ADR process before Phase 3 begins.
   environment without removing a finalizer or deleting an unverified resource.
 - A public report identifies the remaining conformance gaps, and the required
   ADRs are public and reviewed.
+- Contributor, governance, support, code of conduct, and ADR guidance is
+  published, and its contact paths work.
 
 ## Phase 3 - Class configuration and topology API
 
@@ -340,6 +398,13 @@ Phase 3 replaces a growing set of infrastructure flags for the controller
 deployment with a small, typed GatewayClass configuration API. The provisional
 kind name is OpenStackGatewayClassConfig. Its final group and kind require an
 accepted ADR for the API domain.
+
+Phase 3 also starts repeatable outside testing. After the controller name,
+module ownership, registry, and migration policy are accepted, publish an
+immutable pre-alpha controller image for evaluation. Run scheduled E2E and a
+leak audit in the first documented Amphora environment. A failed cloud service
+or exhausted test quota must be distinguishable from a controller regression.
+These artifacts and jobs do not create a support claim.
 
 Gateway API v1.6.1 also provides `Gateway.spec.infrastructure`, including a
 namespaced `parametersRef`. Prefer that standard extension point over
@@ -407,6 +472,10 @@ tags, L7 operations, selected networks, and the configured project's read and
 mutation permissions. Barbican and custom VIP security groups are checked only
 when the class requests a feature that needs them.
 
+The compatibility record includes the literal provider identifier returned by
+Octavia. Supporting an environment-specific alias is an identity decision, not
+an excuse to accept a non-Amphora provider silently.
+
 ### Phase 3 exit criteria
 
 - A reviewed `v1alpha1` API, generated CRD, examples, and API reference are
@@ -420,6 +489,8 @@ when the class requests a feature that needs them.
   live parameter object.
 - API defaulting, immutability, status, storage, upgrade, and deprecation rules
   have tests and documentation.
+- A versioned pre-alpha image can be installed by digest, and scheduled E2E in
+  the first recorded Amphora environment performs a post-test leak audit.
 
 ## Phase 4 - Network, address, and security automation
 
@@ -512,6 +583,11 @@ a Neutron port, NodePort reachability prerequisites, permissions to read and
 update security groups, Floating IP quota, and optional Barbican access.
 Diagnostic output must be redacted and suitable for attaching to an issue.
 
+Compatibility work in this phase records IPv4, IPv6, or dual-stack behavior
+instead of assuming the IP family. It also records Amphora topology and the
+tested kube-proxy implementation or replacement. Unsupported combinations are
+reported as such before they become a release promise.
+
 ### Phase 4 exit criteria
 
 - Network selection never chooses arbitrarily and does not mutate OpenStack
@@ -529,6 +605,9 @@ Diagnostic output must be redacted and suitable for attaching to an issue.
   for the referenced configuration.
 - No network, subnet, router, CAPO resource, or OCCM resource is adopted or
   deleted.
+- The recurring environment job exercises both claimed NodePort traffic
+  policies, endpoint changes, and leak detection without an unbounded burst of
+  Kubernetes or OpenStack API calls.
 
 ## Phase 5 - Complete the Amphora HTTP/HTTPS path
 
@@ -607,6 +686,10 @@ controller. If Barbican cannot expose enough identity to prove ownership, the
 controller does not manage that resource type until a safe identity mechanism
 has been designed and tested.
 
+Barbican is required only for a release profile that claims terminated HTTPS.
+An HTTP-only environment without Barbican can remain a verified or supported
+profile if the release contract and compatibility matrix say so explicitly.
+
 ### Addresses and backend policy
 
 Support representable `Gateway.spec.addresses` requests as Octavia VIP
@@ -672,11 +755,16 @@ removal outside the original development environment.
   failure, version upgrade, rollback, finalization, and leak detection.
 - Publish measured scale results and behavior under bursts of EndpointSlice
   updates, including OpenStack API call budgets.
+- Publish Gateway creation and route update latency, Amphora instance and quota
+  cost per Gateway topology, and the conditions that make direct Amphora a
+  better fit than an Octavia L4 load balancer in front of an in-cluster proxy.
 
 ### Operations and security
 
 - Publish metrics with bounded label values, alert guidance, dashboards, and
   useful Events.
+- Keep controller control-plane metrics separate from traffic metrics exposed
+  by Octavia or Amphora. Document which system is the source for each alert.
 - Harden and validate the Phase 2 guidance for troubleshooting, recovery from
   blocked finalization, ownership audits, and checks before uninstalling.
 - Document the minimum required Keystone roles for Octavia, Neutron, and
@@ -706,12 +794,16 @@ removal outside the original development environment.
   tasks.
 - Collect feedback and publishable upgrade evidence from at least two external
   adopters.
+- Develop at least two release-capable maintainers from different
+  organizations. Record independent review of real pull requests and design
+  decisions, and make release and security response possible when one
+  maintainer is unavailable.
 - Submit a pinned conformance report upstream only when the submission can
   record partial results without overstating runtime `supportedFeatures`.
   Otherwise retain the public gap report until Core support makes an accurate
-  submission possible. After Gateway API v1.6, an implementation needs at
-  least a partially conformant report to join the upstream implementation
-  list.
+  submission possible. Under the current upstream listing policy, an
+  implementation needs at least a partially conformant report from an accepted
+  recent Gateway API release to join the implementation list.
 
 An eventual Kubernetes SIG or OpenInfra home is a community decision, not an
 engineering milestone this repository can promise. Consider that step only
@@ -741,6 +833,11 @@ organization, adopter evidence, and sustained upstream participation.
 Stable means the supported contract can be operated and upgraded without
 depending on repository internals or maintainer intervention.
 
+The stable milestone keeps eligibility for the upstream implementation list as
+a gate. A useful, documented pre-stable subset may be released earlier, but it
+must not be called the stable Gateway API contract if it cannot submit the
+required current report.
+
 The stable release requires all of the following:
 
 - The class configuration API is at least `v1beta1`, with tested conversion,
@@ -749,6 +846,9 @@ The stable release requires all of the following:
   controller release does not make an experimental policy stable.
 - At least two external adopters have completed an upgrade between supported
   minor versions and provided publishable evidence.
+- At least two release-capable maintainers from different organizations have a
+  record of independent review, and the release and security procedures do not
+  depend on one person.
 - The supported Kubernetes, Gateway API, OpenStack, Octavia, and CNI version
   policies and the release support window are public.
 - The upstream conformance report and entry in the implementation list match the
@@ -799,3 +899,5 @@ supporting evidence changes the product contract:
 - [Gophercloud](https://github.com/gophercloud/gophercloud)
 - [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)
 - [cloud-provider-openstack](https://github.com/kubernetes/cloud-provider-openstack)
+- [Kubernetes repository guidelines](https://github.com/kubernetes/community/blob/main/github-management/kubernetes-repositories.md)
+- [Kubernetes template project](https://github.com/kubernetes/kubernetes-template-project)
