@@ -22,37 +22,46 @@ desired Gateway graph, one observed graph, one deterministic mutation plan,
 and one cloud mutation entry point. GatewayClass and HTTPRoute reconciliation
 can continue to validate inputs and write the status fields they own.
 
+[ADR 0001](design/adr/0001-gateway-graph-writer.md) is the proposed contract.
+It is not accepted yet, so the mutation boundary must not change until its
+public review is complete.
+
 The graph lock remains useful, but correctness must come from observation and
 desired state rather than memory held by the active process. Tests should run
 Gateway and HTTPRoute events in both orders, cancel a waiting reconcile, build
 a new reconciler after a partial transition, and show that a second pass over
 converged state makes no cloud mutation.
 
-### 2. Split the controller files by lifecycle phase
+### 2. Keep the controller lifecycle boundaries focused
 
-The thin `Reconcile` entry points and scope patchers are in good shape. The
-large controller files below now carry too many separate responsibilities:
+The first behavior-preserving split is complete. The thin `Reconcile` entry
+points stay in these files:
 
 - `internal/controller/gateway_controller.go`
 - `internal/controller/httproute_controller.go`
 
-Split them in behavior-preserving pull requests. Useful boundaries are
-Gateway validation and desired model construction, HTTPRoute attachment,
-backend resolution, binding and finalization, status calculation, and watch
-mappers. Keep these files in `internal/controller`; do not move unrelated code
-into a generic helper package.
+Gateway validation, desired model construction, HTTPRoute attachment, backend
+resolution, binding and finalization, status calculation, and watch mappers
+now live in focused files in the same package. The ownership audit also uses
+the binding parsers directly instead of constructing temporary reconcilers.
 
-This work should also replace the remaining string inspection in HTTPRoute
-error handling with typed validation or dependency outcomes. Identity
-validation should use a fixed field order so the same invalid input always
-produces the same message. User-facing validation messages should point to the
-right roadmap phase; ReferenceGrant is Phase 5 work, not Phase 3 work.
+The [development layout guide](development-layout.md) records the matching
+patterns in Kubernetes, Cluster API, and Cluster API Provider OpenStack. A
+controller subpackage or OpenStack service package should follow a stable
+responsibility and dependency boundary, not a line-count threshold.
+
+The same cleanup removes the remaining error-string inspection from HTTPRoute
+status handling, gives identity validation a fixed field order, and corrects
+the ReferenceGrant message to Phase 5. Further controller package moves wait
+for the graph contract. Moving the OpenStack adapter before that contract
+would move the same orchestration code twice and make the ownership change
+harder to review.
 
 ### 3. Tighten event fan-out and retry evidence
 
 The current indexes avoid cluster-wide dependency scans. Node events can still
-fan out to every indexed Route with a Service backend and then read its parent,
-Service, and EndpointSlices to find the affected set. Add scale tests that
+fan out to every indexed HTTPRoute with a Service backend and then read its
+parent, Service, and EndpointSlices to find the affected set. Add scale tests that
 count Kubernetes reads and effective reconciles during Node and EndpointSlice
 bursts. Narrow the index or mapper if those results exceed the documented API
 budget.

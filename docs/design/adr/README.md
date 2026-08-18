@@ -55,4 +55,4 @@ new ADR and link both records.
 
 | ADR | Status | Decision |
 | --- | --- | --- |
-| None | — | The project has not accepted an ADR yet |
+| [0001](0001-gateway-graph-writer.md) | Proposed | Use one writer and durable route fragments for each Gateway graph |

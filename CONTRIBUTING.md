@@ -83,6 +83,10 @@ Follow the dependency boundaries in the architecture document:
 - `internal/cloud/openstack` owns Gophercloud and OpenStack API behavior
 - `internal/audit` builds provider-neutral audit reports
 
+The [development layout guide](docs/development-layout.md) explains why the
+controller is split by lifecycle file today and what must be true before a new
+controller or OpenStack service package is introduced.
+
 When a reconciler starts reading or writing another Kubernetes resource,
 update both its RBAC markers and `config/rbac/cluster_role.yaml`. Preserve
 status fields owned by other controllers.
