@@ -10,6 +10,10 @@ environment, but its exact versions and topology have not been published.
 It did not test controller traffic, recovery, deletion, or Gateway API
 conformance.
 
+The project uses `probed`, `verified`, `supported`, and `conformant` as separate
+evidence levels. The definitions are in the roadmap. A higher level is never
+inferred from a lower one.
+
 ## Evidence matrix
 
 | Capability | Current evidence | Evidence required for a support claim | Known constraints |
@@ -27,25 +31,12 @@ conformance.
 
 ## Environment profile
 
-Every compatibility report must record:
-
-- controller release or commit and Gateway API version
-- Kubernetes version, CNI, kube-proxy mode, and Service and Pod CIDRs
-- OpenStack and Octavia releases and negotiated API microversions
-- confirmation that the Octavia provider is Amphora and whether its topology is
-  `SINGLE` or `ACTIVE_STANDBY`
-- VIP, member, and external network relationships, with private identifiers
-  removed
-- Node address selection and backend member mode
-- Floating IP, custom VIP security group, and Barbican availability
-- the minimum required roles and relevant quotas
-- tests run for traffic, status, restart, drift, deletion, leaks, and
-  conformance
-- links to redacted logs and reports, with enough detail for another operator
-  to reproduce the tests
-
-A compatibility statement applies only to the recorded release and environment
-profile. “Works on OpenStack” is not sufficient evidence.
+Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md) as
+the environment profile. It records the exact controller artifact, cluster and
+cloud versions, literal Amphora provider and topology, network path, endpoint
+behavior, optional services, quotas, tests, and redacted evidence. A
+compatibility statement applies only to that recorded release and environment.
+“Works on OpenStack” is not sufficient evidence.
 
 ## Reporting an environment
 
@@ -54,3 +45,9 @@ Amphora and explain how Amphora reaches backend members. Publish only
 information you are authorized to share. Remove credentials, tokens, tenant
 identifiers, private addresses, customer names, and other sensitive topology
 details.
+
+Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md)
+for evidence kept in the repository. Use the
+[conformance gap template](../reports/conformance-gap-template.md) for a local
+gap analysis. Neither template is evidence until it contains actual results
+from the named revision and environment.

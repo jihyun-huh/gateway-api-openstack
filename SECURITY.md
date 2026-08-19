@@ -5,13 +5,26 @@
 The project is pre-alpha and does not yet have a supported production release.
 This does not reduce the importance of reporting vulnerabilities responsibly.
 
+| Version | Supported |
+| --- | --- |
+| No published release | No production support |
+| Current `main` branch | Security fixes are considered on a best-effort basis |
+
 ## Reporting a vulnerability
 
-Do not open a public GitHub issue.
+Do not put vulnerability details in a public GitHub issue.
 
-Use GitHub's private vulnerability reporting feature for this repository. The
-repository owner must enable that feature before publishing the first
-controller release.
+Use GitHub's private vulnerability reporting feature only when its report
+button is visible. The repository does not currently have that feature enabled
+and does not publish another monitored private security address. Until a
+private channel is available, open an issue that says only that private
+reporting is unavailable. Do not include the vulnerability, affected
+resources, or reproduction details. A maintainer must establish a private
+channel before asking for those details.
+
+The repository owner must verify that private vulnerability reporting is
+enabled before publishing any release. A release issue cannot be completed
+until that check is recorded.
 
 Include:
 

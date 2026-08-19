@@ -1,0 +1,66 @@
+name: Design proposal
+description: Discuss a public API, ownership, lifecycle, or architecture decision.
+title: "[Design]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem and current constraints. A design issue is not
+        an accepted ADR. Do not include credentials or private cloud details.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who has the problem, and what cannot be done safely today?
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior and constraints
+      description: Describe the relevant Gateway API, Kubernetes, and OpenStack behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed decision
+      description: State the smallest decision needed. Implementation details can follow later.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: ownership
+    attributes:
+      label: Ownership, failure, and deletion
+      description: Explain mutation authority, immutable identity, restart recovery, and safe cleanup.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: API, upgrade, and conformance impact
+      description: Include migration, rollback, status, and Gateway API conformance effects.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Test and environment evidence needed
+      description: List unit, adapter, envtest, OpenStack, fault, upgrade, or conformance work.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing design issues and ADRs.
+          required: true
+        - label: I have not treated an implementation detail as ownership authority.
+          required: true

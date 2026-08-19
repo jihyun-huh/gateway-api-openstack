@@ -1,8 +1,13 @@
 # Architecture
 
-Status: proposed
+Status: proposed; current behavior is identified in each section
 
 Audience: contributors, reviewers, OpenStack operators, Gateway API implementers
+
+This document contains both the current ownership contract and the intended
+HTTP/HTTPS architecture. Tables and sections say when behavior is only planned.
+Accepted [architecture decision records](adr/README.md) are the source of truth
+when they differ from this proposal. There are no accepted ADRs yet.
 
 ## Problem statement
 
@@ -15,6 +20,11 @@ gateway-api-openstack is designed only for Octavia's Amphora provider. It
 translates Kubernetes Gateway API intent into Octavia, Neutron, and Barbican
 resources. It does not try to support every Octavia provider or Gateway API
 feature.
+
+cloud-provider-openstack's Octavia Ingress Controller is related prior art, but
+it reconciles the Ingress API and owns a separate resource graph.
+gateway-api-openstack is not its successor and does not adopt or migrate its
+resources.
 
 ## Product contract
 
@@ -35,9 +45,10 @@ feature.
 - The controller does not manage Traefik, Envoy, Ingress, other Octavia
   providers, or Gateway API route kinds other than HTTPRoute.
 
-This design lets users configure multiple Gateways, listeners, routes,
-namespaces, backends, and certificates through standard Gateway API resources
-on tested OpenStack topologies.
+The target design is intended to let users configure multiple Gateways,
+listeners, routes, namespaces, backends, and certificates through standard
+Gateway API resources on tested OpenStack topologies. The current implementation
+supports the smaller graph shown below.
 
 ## Design principles
 
@@ -167,8 +178,8 @@ but must not alter worker ports.
 
 ## Resource graph
 
-The following table distinguishes the current Phase 1 graph from the planned
-HTTP/HTTPS target.
+The following table distinguishes the current constrained graph and Phase 2
+hardening from the planned HTTP/HTTPS target.
 
 | Kubernetes intent | OpenStack representation | Availability and ownership |
 | --- | --- | --- |
@@ -275,6 +286,12 @@ still comes from the desired graph and OpenStack observation, so restart and
 leader change require no lock recovery. Leader election is required for
 multiple controller replicas.
 
+The current implementation has that keyed coordinator, but Gateway and
+HTTPRoute reconciliation still call separate provider operations. Serialization
+prevents overlapping mutation; it does not make those paths one complete graph
+writer. The writer and route fragment contract require an accepted ADR before
+the target in this section is considered implemented.
+
 ### Asynchronous OpenStack operations
 
 Octavia is asynchronous. Each reconciliation should make at most one state
@@ -293,7 +310,10 @@ again before acting.
 Manager setup indexes GatewayClass ownership, parent Gateway references,
 backend Services, cleanup bindings, and the Service associated with each
 EndpointSlice. Watch handlers use those indexes instead of listing every object
-in the cluster. Node changes enqueue only affected managed NodePort backends.
+in the cluster. The current Node mapper starts with every indexed Route that has
+a Service backend, then resolves the affected set. The target is narrower
+fan-out to affected managed NodePort backends, with scale tests that count reads
+and effective reconciles.
 
 Predicates may filter updates that change only status or are otherwise
 irrelevant, but they must not hide a dependency transition needed for
@@ -303,9 +323,9 @@ read-after-write or safety requirement.
 
 ## Target controller responsibilities
 
-These responsibilities describe the planned design. Phase 1 implements only
-the constrained subset documented in the roadmap and
-`docs/getting-started.md`.
+These responsibilities describe the planned design. The current controller
+implements the constrained subset and most Phase 2 reliability foundations
+documented in the roadmap and `docs/getting-started.md`.
 
 ### GatewayClass reconciler
 
@@ -355,6 +375,11 @@ subnet, Node readiness, and EndpointSlice state.
 `externalTrafficPolicy: Cluster` may use every eligible Node.
 `externalTrafficPolicy: Local` uses only Nodes with eligible local endpoints
 and therefore updates membership from EndpointSlice events.
+
+Compatibility evidence must name the tested Local endpoint behavior, IP family,
+kube-proxy mode or replacement, and Amphora topology. The full environment
+profile belongs in the [OpenStack E2E report](../reports/openstack-e2e-template.md).
+Unrecorded combinations are not part of a support claim.
 
 NodePort works where Pod CIDRs are not routable from Amphora, but it requires
 explicit routing and security rules that allow Amphora instances to reach
@@ -437,6 +462,11 @@ created by the controller. Cross-namespace Secret access requires a
 ReferenceGrant. Certificate identity, rotation, rollback, SNI grouping, and
 deletion safety must be designed and tested before HTTPS is advertised.
 
+Barbican is a requirement for a profile that claims terminated HTTPS, not for
+an HTTP-only profile. A release may verify or support HTTP in an environment
+without Barbican when its compatibility record and feature claims say so
+clearly.
+
 `ReferenceGrant` is a union feature. The controller reports it in
 `supportedFeatures` only after Service and Secret references and every
 applicable feature combination pass the pinned conformance suite.
@@ -451,6 +481,11 @@ environments. The controller determines support from:
 - enabled Octavia, Neutron, and optional Barbican services
 - project roles, policies, quotas, and visible topology
 - behavior proven by this project's tests in a documented OpenStack environment
+
+Compatibility evidence records the literal provider identifier returned by
+Octavia. An environment-specific alias may be accepted only if a reviewed
+identity rule proves that it is Amphora. An arbitrary provider string is never
+treated as a compatible extension point.
 
 Capabilities affect tags, L7 behavior, custom VIP security groups, health
 monitors, TLS, and every Gateway API feature claim. A feature is unsupported
@@ -545,6 +580,10 @@ how to use the report when finalization is blocked.
 - Images and charts for a production candidate release require reproducible
   builds, SBOMs, provenance, signatures, vulnerability scanning, and an
   immutable promotion process.
+- Controller reconciliation, provider call, and lifecycle metrics describe the
+  control plane. Traffic and Amphora health metrics come from Octavia or the
+  data plane. Dashboards and alerts must name the source instead of presenting
+  the two sets as one metric contract.
 
 ## Explicit data plane boundary
 
@@ -564,10 +603,15 @@ controller's Gateway graph.
 
 ## Open design decisions
 
+The [ADR index and process](adr/README.md) tracks accepted decisions. The list
+below is a backlog, not an implicit decision.
+
 The following require public ADRs before their associated feature is declared
 stable:
 
-- canonical controller name, module ownership, and project API domain
+- canonical controller name, module and repository ownership, artifact
+  registry, project API domain, and migration from existing controller-derived
+  finalizer and annotation keys
 - graph writer for each Gateway and ownership of route fragments
 - GatewayClass parameter snapshot, migration, and deletion behavior
 - whether individual Gateways need infrastructure parameters and, if so, their

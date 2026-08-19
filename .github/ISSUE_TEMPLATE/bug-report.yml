@@ -27,6 +27,8 @@ body:
     id: openstack-version
     attributes:
       label: OpenStack and Octavia versions
+      description: Enter N/A only when the bug does not reach an OpenStack API.
+      placeholder: 2026.1 and Octavia version, or N/A
     validations:
       required: true
   - type: input
@@ -35,8 +37,9 @@ body:
       label: Amphora topology
       description: >-
         Confirm that the provider is Amphora and state whether its topology is
-        SINGLE or ACTIVE_STANDBY.
-      placeholder: amphora, ACTIVE_STANDBY
+        SINGLE or ACTIVE_STANDBY. Enter N/A only when the bug does not reach an
+        OpenStack API.
+      placeholder: amphora, ACTIVE_STANDBY, or N/A
     validations:
       required: true
   - type: dropdown

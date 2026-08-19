@@ -1,10 +1,11 @@
 # Getting started with the current controller
 
-The controller is pre-alpha. Phase 1 is implemented, and Phase 2 focuses on
-reliability. The Phase 0 probe tested the required Octavia and Neutron
-operations in one environment. The project has not yet published results from
-end-to-end controller testing in an OpenStack environment. No release image is
-available.
+The controller is pre-alpha. The constrained Phase 1 path and most Phase 2
+reliability foundations are implemented, but the Phase 2 graph writer and exit
+evidence are not complete. The Phase 0 probe tested the required Octavia and
+Neutron operations in one environment. The project has not yet published
+results from end-to-end controller testing in an OpenStack environment. No
+release image is available.
 
 Use these manifests only in a disposable test project. Keep
 cloud-provider-openstack responsible for Services of type `LoadBalancer`. This
@@ -112,9 +113,9 @@ unusable, so it cannot be mistaken for a published release.
 
 ```sh
 make container-build \
-  IMAGE=registry.example/openstack-gateway-controller:v0.1.0-dev \
-  VERSION=v0.1.0-dev
-docker push registry.example/openstack-gateway-controller:v0.1.0-dev
+  IMAGE=registry.example/openstack-gateway-controller:v0.2.0-dev \
+  VERSION=v0.2.0-dev
+docker push registry.example/openstack-gateway-controller:v0.2.0-dev
 ```
 
 Set `CONTAINER_TOOL=podman` on the `make` command when Podman is preferred.

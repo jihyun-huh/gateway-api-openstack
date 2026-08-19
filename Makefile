@@ -25,7 +25,7 @@ help: ## Show available targets.
 build: build-controller build-audit build-probe ## Build all release binaries.
 
 .PHONY: build-controller
-build-controller: ## Build the Phase 1 controller.
+build-controller: ## Build the controller.
 	@mkdir -p $(BINARY_DIR)
 	$(GO) build -buildvcs=false -trimpath -ldflags "-X main.version=$(VERSION)" -o $(CONTROLLER_BINARY) ./cmd/openstack-gateway-controller
 
