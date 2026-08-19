@@ -10,17 +10,17 @@ opened as focused issues. It does not replace the phase status and exit gates in
 
 ### 1. Finish the Gateway graph writer contract
 
-`GatewayReconciler` and `HTTPRouteReconciler` can both change one Octavia load
-balancer. `GraphCoordinator` makes those calls take turns inside the active
-process. It does not compile the complete Gateway graph and it does not decide
-how route fragments survive a restart or a leader change.
+`gateway.Reconciler` and `httproute.Reconciler` can both change one Octavia load
+balancer. The shared `graph.Coordinator` makes those calls take turns inside
+the active process. It does not compile the complete Gateway graph and it does
+not decide how route fragments survive a restart or a leader change.
 
 Start with an ADR for the writer and route fragment ownership. Preserve the
 current route identity and route selection behavior until that decision is
 accepted. The implementation should then move toward one provider-neutral
 desired Gateway graph, one observed graph, one deterministic mutation plan,
-and one cloud mutation entry point. GatewayClass and HTTPRoute reconciliation
-can continue to validate inputs and write the status fields they own.
+and one cloud mutation entry point. Gateway and HTTPRoute reconciliation can
+continue to validate inputs and write the status fields they own.
 
 [ADR 0001](design/adr/0001-gateway-graph-writer.md) is the proposed contract.
 It is not accepted yet, so the mutation boundary must not change until its
@@ -32,30 +32,38 @@ Gateway and HTTPRoute events in both orders, cancel a waiting reconcile, build
 a new reconciler after a partial transition, and show that a second pass over
 converged state makes no cloud mutation.
 
-### 2. Keep the controller lifecycle boundaries focused
+### 2. Protect the controller and OpenStack package boundaries
 
-The first behavior-preserving split is complete. The thin `Reconcile` entry
-points stay in these files:
+The behavior-preserving package split is complete. Each reconciler now owns its
+lifecycle in a resource package:
 
-- `internal/controller/gateway_controller.go`
-- `internal/controller/httproute_controller.go`
+- `internal/controller/gatewayclass`
+- `internal/controller/gateway`
+- `internal/controller/httproute`
 
-Gateway validation, desired model construction, HTTPRoute attachment, backend
-resolution, binding and finalization, status calculation, and watch mappers
-now live in focused files in the same package. The ownership audit also uses
-the binding parsers directly instead of constructing temporary reconcilers.
+The root `internal/controller` package contains the shared Kubernetes-facing
+contracts. `internal/controller/graph` contains only the Gateway UID keyed
+coordinator, and `internal/controller/ownershipaudit` contains the read-only
+Kubernetes binding collector. Resource packages depend on those lower-level
+contracts; the root package does not import a reconciler.
 
-The [development layout guide](development-layout.md) records the matching
-patterns in Kubernetes, Cluster API, and Cluster API Provider OpenStack. A
-controller subpackage or OpenStack service package should follow a stable
-responsibility and dependency boundary, not a line-count threshold.
+The OpenStack adapter is also divided by responsibility. Authentication and
+shared clients, error classification, immutable identity, Octavia, Neutron,
+cross-service graph operations, and read-only inventory each have a named
+package below `internal/cloud/openstack`. The root package remains the facade
+used by commands, probes, `cloud.Provider`, and `audit.Scanner`.
 
-The same cleanup removes the remaining error-string inspection from HTTPRoute
-status handling, gives identity validation a fixed field order, and corrects
-the ReferenceGrant message to Phase 5. Further controller package moves wait
-for the graph contract. Moving the OpenStack adapter before that contract
-would move the same orchestration code twice and make the ownership change
-harder to review.
+The [development layout guide](development-layout.md) records the current
+package layout and the upstream patterns behind it. Keep these boundaries in
+normal review: controller packages must not import Gophercloud, OpenStack
+packages must not import Kubernetes types, and an OpenStack child package must
+not import the root facade.
+
+This move does not change the provider interface, ownership rules, selected
+route behavior, or mutation ordering. It also does not implement
+[ADR 0001](design/adr/0001-gateway-graph-writer.md). The proposed single writer
+and durable route fragment contract still need public review before their
+implementation begins.
 
 ### 3. Tighten event fan-out and retry evidence
 

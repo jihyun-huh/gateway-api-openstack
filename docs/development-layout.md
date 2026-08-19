@@ -1,6 +1,6 @@
 # Development package and file layout
 
-Status: current guidance and a proposed later package layout
+Status: current guidance
 
 This page explains how files in the controller and OpenStack adapter should be
 split. It is based on current upstream trees, but it is not a rule that every
@@ -107,7 +107,7 @@ port, router, Floating IP, and security group. See the pinned
 [service packages](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/tree/78ef68d5853a85e48e6f6bf69a353b3a1d073526/pkg/cloud/services)
 and [networking package](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/tree/78ef68d5853a85e48e6f6bf69a353b3a1d073526/pkg/cloud/services/networking).
 
-This repository should copy the service boundary, not CAPO's exact dependency
+This repository uses the service boundary, not CAPO's exact dependency
 direction. Kubernetes objects still stop at `internal/controller`, and
 Gophercloud types still stop at `internal/cloud/openstack`.
 
@@ -130,44 +130,78 @@ and [OpenStack adapter](https://github.com/kubernetes/cloud-provider-openstack/t
 Some files there are still large. That is another reason not to treat line
 count as a community rule.
 
-## Layout used now
+## Controller layout used now
 
-For the current Phase 2 controller, keep one `internal/controller` package and
-split each resource by lifecycle responsibility. The tree below shows the
-relevant Gateway and HTTPRoute lifecycle files, not every file in the package:
+The controller follows the Cluster API pattern of one package for each core
+reconciler. Files inside a resource package still follow lifecycle work. The
+tree below leaves out tests and a few small shared files:
 
 ```text
 internal/controller/
-├── gateway_controller.go
-├── gateway_validation.go
-├── gateway_binding.go
-├── gateway_graph.go
-├── gateway_cleanup.go
-├── gateway_status.go
-├── gateway_version_status.go
-├── gateway_scope.go
-├── gateway_watch.go
-├── httproute_controller.go
-├── httproute_parent.go
-├── httproute_selection.go
-├── httproute_model.go
-├── httproute_backend.go
-├── httproute_binding.go
-├── httproute_graph.go
-├── httproute_cleanup.go
-├── httproute_status.go
-├── httproute_version_status.go
-├── httproute_scope.go
-└── httproute_watch.go
+├── config.go
+├── binding.go
+├── gateway_api_version.go
+├── indexes.go
+├── predicates.go
+├── provider_outcomes.go
+├── gatewayclass/
+│   ├── gatewayclass_controller.go
+│   └── gatewayclass_scope.go
+├── gateway/
+│   ├── gateway_controller.go
+│   ├── gateway_validation.go
+│   ├── gateway_binding.go
+│   ├── gateway_graph.go
+│   ├── gateway_cleanup.go
+│   ├── gateway_status.go
+│   ├── gateway_scope.go
+│   └── gateway_watch.go
+├── httproute/
+│   ├── httproute_controller.go
+│   ├── httproute_parent.go
+│   ├── httproute_selection.go
+│   ├── httproute_model.go
+│   ├── httproute_backend.go
+│   ├── httproute_binding.go
+│   ├── httproute_graph.go
+│   ├── httproute_cleanup.go
+│   ├── httproute_status.go
+│   ├── httproute_scope.go
+│   └── httproute_watch.go
+├── graph/
+│   └── coordinator.go
+└── ownershipaudit/
+    └── collector.go
 ```
 
-This is intentionally one package for now. HTTPRoute reconciliation consumes
-Gateway validation and binding rules, status code uses shared ParentRef
-comparison, and the ownership audit reads both bindings. Moving these files
-into kind packages today would require exporting implementation details or
-creating a vague shared package.
+The root `controller` package is a small Kubernetes-facing base package. It
+owns validated configuration, durable binding parsers, Gateway API version
+observation, shared indexes and predicates, and provider outcome policy. It
+does not import a reconciler package. This keeps the dependency direction from
+the resource packages toward the shared contracts.
 
-Use these file rules:
+The dependencies between resource packages are deliberately small:
+
+```text
+gatewayclass ------> controller
+gateway -----------> controller, graph, cloud
+httproute ---------> controller, graph, gateway, cloud
+ownershipaudit ----> controller, audit, cloud
+graph -------------> Kubernetes UID keyed coordination only
+```
+
+HTTPRoute uses the exported Gateway validation entry point instead of keeping
+a second copy of the listener rules. The `graph` package has no dependency on a
+resource reconciler. It currently contains only the process-local coordinator
+that serializes work by Gateway UID.
+
+This package move does not accept or implement
+[ADR 0001](design/adr/0001-gateway-graph-writer.md). In particular,
+`internal/controller/graph` is not a desired graph compiler, a route fragment
+store, or a single cloud writer. Gateway and HTTPRoute still call the existing
+provider operations separately after taking the same keyed lock.
+
+Inside a reconciler package, use these file rules:
 
 - `*_controller.go` contains immutable dependencies, RBAC markers, `Reconcile`,
   and lifecycle dispatch.
@@ -179,92 +213,75 @@ Use these file rules:
 - `*_scope.go` owns request-local state and deferred patching.
 - `*_watch.go` contains manager setup and event mapping.
 
-Do not add `common`, `helpers`, or a general controller `util` package. Leave a
-small shared function in the controller package until its actual responsibility
-has a stable name.
+Do not add `common`, `helpers`, or a general controller `util` package. Add a
+shared contract to the root package only when more than one resource package
+needs it and its ownership is clear.
 
-## Package split after the graph decision
+## OpenStack adapter layout used now
 
-[ADR 0001](design/adr/0001-gateway-graph-writer.md) proposes a stable graph
-compiler and writer boundary. If that ADR is accepted and the interface survives
-implementation review, the controller can move toward:
-
-```text
-internal/controller/
-├── gatewayclass/
-├── gateway/
-├── httproute/
-├── graph/
-└── ownershipaudit/
-
-internal/cloud/
-├── graph.go
-├── outcome.go
-└── errors.go
-```
-
-The `graph` package is justified only if it can own a provider-neutral desired
-graph and writer without importing a resource reconciler package. Gateway and
-HTTPRoute packages may depend on graph contracts; graph must not depend back on
-them.
-
-Move a controller into its own package only when all of these are true:
-
-- its lifecycle and status ownership are clear
-- shared invariants have a named lower-level owner
-- moving it does not create an import cycle
-- most identifiers can stay unexported
-- its package tests can construct it without another controller's private state
-
-## OpenStack adapter target
-
-The current `internal/cloud/openstack` package keeps the Kubernetes boundary
-clean, but graph orchestration, Octavia resources, Neutron Floating IPs, and the
-read-only audit now share one directory. After the graph provider interface is
-accepted, use service packages and resource files:
+The OpenStack adapter follows CAPO's service-oriented layout, adjusted for the
+smaller graph in this repository. Octavia resources remain files in one
+package instead of becoming one package per API resource:
 
 ```text
 internal/cloud/openstack/
 ├── provider.go
-├── clients.go
+├── compatibility.go
+├── wait.go
+├── clients/
+│   └── client.go
 ├── apierrors/
 │   └── classify.go
 ├── identity/
 │   └── metadata.go
-├── graph/
-│   ├── observe.go
-│   ├── plan.go
-│   ├── mutate.go
-│   └── delete.go
 ├── octavia/
 │   ├── service.go
 │   ├── loadbalancer.go
 │   ├── listener.go
 │   ├── pool.go
-│   ├── member.go
 │   ├── monitor.go
 │   ├── l7policy.go
-│   └── l7rule.go
+│   └── wait.go
 ├── neutron/
+│   ├── service.go
 │   └── floatingip.go
-└── audit/
-    ├── scan.go
+├── graph/
+│   ├── provider.go
+│   ├── gateway.go
+│   ├── route.go
+│   ├── route_graph.go
+│   ├── delete.go
+│   └── loadbalancer_status.go
+└── inventory/
+    ├── scanner.go
     └── classification.go
 ```
 
-Octavia resources are files in one `octavia` package, not one package per API
-resource. Octavia and Neutron are package boundaries because they have
-different clients and failure semantics. The graph package composes them and
-executes one deterministic mutation. The audit package depends on read-only
-interfaces and must not gain a mutation client.
+The packages have these responsibilities:
 
-The leaf packages for API error classification and immutable identity need to
-come first. Service packages can depend on those leaves, while the root adapter
-can depend on the service and graph packages. A child package must not import
-the root `openstack` package; that would create an import cycle as soon as the
-root provider wires the child. If identity or error handling cannot be given a
-small named contract, keep the adapter in one package until it can.
+- `clients` authenticates once, creates shared service clients, and applies the
+  process-wide request limit.
+- `apierrors` classifies Gophercloud and HTTP failures into provider-neutral
+  cloud errors.
+- `identity` encodes and validates immutable ownership metadata.
+- `octavia` and `neutron` contain operations for one OpenStack service.
+- `graph` composes service operations for the existing Gateway and HTTPRoute
+  provider methods, including ownership checks and ordered mutation.
+- `inventory` scans through read-only interfaces and builds the advisory
+  ownership inventory. It has no mutation interface.
 
-Do this as separate moves after the graph contract is stable. Moving files,
-changing the provider interface, and changing ownership behavior in one commit
-makes review and rollback much harder.
+The root `openstack` package is a narrow facade used by commands and probes. It
+keeps the existing `cloud.Provider` and audit scanner entry points stable while
+delegating to `graph` and `inventory`. A child package never imports the root
+facade. Kubernetes and Gateway API types do not enter any OpenStack package.
+
+`internal/cloud/openstack/graph` is not the single Gateway graph writer proposed
+by ADR 0001. It is the provider-side home for the existing, separate Gateway
+and HTTPRoute operations. The split changes where the code lives, not resource
+ownership, route selection, provider interfaces, or mutation behavior.
+
+Use a new service package when it has a distinct OpenStack client and failure
+boundary. Keep resources from the same service as files in that package until
+they need a smaller contract for a concrete reason. Cross-service identity,
+ordering, and ownership checks belong in `graph`, while read-only audit rules
+belong in `inventory`.

@@ -204,7 +204,7 @@ graph. Route reconcilers may remain responsible for attachment validation and
 status, but one writer will compile and update listener policy order from the
 complete desired graph.
 
-The current `GraphCoordinator` serializes the separate Gateway and HTTPRoute
+The current `graph.Coordinator` serializes the separate Gateway and HTTPRoute
 provider calls inside the active process. This closes the overlapping mutation
 race, but it is not the complete graph writer described here. Gateway and
 HTTPRoute still build and apply different cloud specifications.

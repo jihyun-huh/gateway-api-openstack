@@ -13,9 +13,9 @@ acceptance.
 
 A Gateway and its attached HTTPRoute change the same Octavia load balancer.
 Today the Gateway reconciler calls `EnsureGateway` and the HTTPRoute reconciler
-calls `EnsureRoute`. `GraphCoordinator` makes those calls take turns for one
-Gateway UID, but each reconciler still observes a different part of the graph
-and creates its own mutation plan.
+calls `EnsureRoute`. The process-local `graph.Coordinator` makes those calls
+take turns for one Gateway UID, but each reconciler still observes a different
+part of the graph and creates its own mutation plan.
 
 That arrangement closes the immediate concurrent mutation race. It does not
 give the controller one complete desired graph. A restart between route detach
@@ -152,8 +152,8 @@ use only indexed candidate keys.
 
 Desired fragments are rebuilt from Kubernetes resources on every graph
 reconciliation. The writer keeps no route fragment registry across calls.
-`GraphCoordinator` remains a process-local serialization tool; it is not the
-source of desired state and it does not need recovery after a restart.
+The keyed coordinator remains a process-local serialization tool; it is not
+the source of desired state and it does not need recovery after a restart.
 
 A missing Gateway blocks normal `Ensure` work. It does not erase cleanup
 authority already recorded on a bound HTTPRoute. When an HTTPRoute has a

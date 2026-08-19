@@ -276,7 +276,7 @@ balancer. Before multiple routes or concurrent workers
 are enabled, one writer keyed by Gateway UID must compile and apply the complete
 listener graph.
 
-GatewayClass and HTTPRoute reconcilers can remain responsible for acceptance,
+Gateway and HTTPRoute reconcilers can remain responsible for acceptance,
 reference validation, and the status fields they own. The graph writer reuses
 their validation and model-building rules, then builds the complete graph from
 fresh Kubernetes objects and durable bindings after it acquires the Gateway
@@ -289,11 +289,14 @@ still comes from the desired graph and OpenStack observation, so restart and
 leader change require no lock recovery. Leader election is required for
 multiple controller replicas.
 
-The current implementation has that keyed coordinator, but Gateway and
-HTTPRoute reconciliation still call separate provider operations. Serialization
-prevents overlapping mutation; it does not make those paths one complete graph
-writer. [ADR 0001](adr/0001-gateway-graph-writer.md) proposes the writer and
-durable route fragment contract. It is not accepted or implemented yet.
+The current implementation has that keyed coordinator in
+`internal/controller/graph`, but Gateway and HTTPRoute reconciliation still
+call separate provider operations. `internal/cloud/openstack/graph` organizes
+those existing provider operations behind the OpenStack facade. Neither
+package is the complete graph writer. Serialization prevents overlapping
+mutation; it does not make the two paths one writer. [ADR
+0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route
+fragment contract. It is not accepted or implemented yet.
 
 ### Asynchronous OpenStack operations
 
