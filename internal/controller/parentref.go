@@ -18,12 +18,15 @@ package controller
 
 import gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-func isGatewayParentRef(parent gatewayv1.ParentReference) bool {
+// IsGatewayParentRef reports whether a ParentReference targets a Gateway.
+func IsGatewayParentRef(parent gatewayv1.ParentReference) bool {
 	return (parent.Group == nil || *parent.Group == gatewayv1.Group(gatewayv1.GroupName)) &&
 		(parent.Kind == nil || *parent.Kind == gatewayv1.Kind("Gateway"))
 }
 
-func parentRefsEqual(left gatewayv1.ParentReference, leftRouteNamespace string, right gatewayv1.ParentReference, rightRouteNamespace string) bool {
+// ParentRefsEqual reports whether two ParentReferences select the same parent
+// and section after applying their route namespace defaults.
+func ParentRefsEqual(left gatewayv1.ParentReference, leftRouteNamespace string, right gatewayv1.ParentReference, rightRouteNamespace string) bool {
 	leftGroup, rightGroup := gatewayv1.Group(gatewayv1.GroupName), gatewayv1.Group(gatewayv1.GroupName)
 	if left.Group != nil {
 		leftGroup = *left.Group
@@ -49,11 +52,13 @@ func parentRefsEqual(left gatewayv1.ParentReference, leftRouteNamespace string, 
 		stringPointerEqual(left.SectionName, right.SectionName) && int32PointerEqual(left.Port, right.Port)
 }
 
-func sameGatewayTarget(left gatewayv1.ParentReference, leftRouteNamespace string, right gatewayv1.ParentReference, rightRouteNamespace string) bool {
+// SameGatewayTarget reports whether two ParentReferences target the same
+// Gateway, without comparing section names.
+func SameGatewayTarget(left gatewayv1.ParentReference, leftRouteNamespace string, right gatewayv1.ParentReference, rightRouteNamespace string) bool {
 	leftCopy, rightCopy := left, right
 	leftCopy.SectionName, leftCopy.Port = nil, nil
 	rightCopy.SectionName, rightCopy.Port = nil, nil
-	return parentRefsEqual(leftCopy, leftRouteNamespace, rightCopy, rightRouteNamespace)
+	return ParentRefsEqual(leftCopy, leftRouteNamespace, rightCopy, rightRouteNamespace)
 }
 
 func stringPointerEqual[T ~string](left, right *T) bool {

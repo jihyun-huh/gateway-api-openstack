@@ -24,7 +24,9 @@ import (
 	"k8s.io/client-go/tools/events"
 )
 
-func conditionTransitioned(
+// ConditionTransitioned reports whether installing a condition would change
+// its status, reason, message, or observed generation.
+func ConditionTransitioned(
 	conditions []metav1.Condition,
 	conditionType string,
 	status metav1.ConditionStatus,
@@ -40,7 +42,9 @@ func conditionTransitioned(
 		existing.ObservedGeneration != generation
 }
 
-func conditionObservedGeneration(
+// ConditionObservedGeneration returns the generation to publish for a
+// condition, preserving the prior value unless advance is true.
+func ConditionObservedGeneration(
 	conditions []metav1.Condition,
 	conditionType string,
 	currentGeneration int64,
@@ -56,14 +60,16 @@ func conditionObservedGeneration(
 	return existing.ObservedGeneration
 }
 
-func recordProviderWarning(
+// RecordProviderWarning emits the warning Event requested by a provider
+// failure policy.
+func RecordProviderWarning(
 	recorder events.EventRecorder,
 	object runtime.Object,
-	policy providerFailurePolicy,
+	policy ProviderFailurePolicy,
 	action string,
 ) {
-	if recorder == nil || !policy.emitEvent {
+	if recorder == nil || !policy.EmitEvent {
 		return
 	}
-	recorder.Eventf(object, nil, corev1.EventTypeWarning, policy.reason, action, "%s", policy.message)
+	recorder.Eventf(object, nil, corev1.EventTypeWarning, policy.Reason, action, "%s", policy.Message)
 }

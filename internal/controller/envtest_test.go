@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package controller_test
 
 import (
 	"context"
@@ -40,6 +40,10 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
+	gatewaycontroller "github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/graph"
 )
 
 const envtestWaitTimeout = 15 * time.Second
@@ -83,7 +87,7 @@ func TestControllerEnvtest(t *testing.T) {
 		t.Fatalf("create envtest manager: %v", err)
 	}
 	config := testConfig()
-	if err := SetupIndexes(t.Context(), manager.GetFieldIndexer(), config); err != nil {
+	if err := controller.SetupIndexes(t.Context(), manager.GetFieldIndexer(), config); err != nil {
 		t.Fatalf("set up controller indexes: %v", err)
 	}
 
@@ -154,7 +158,7 @@ func createEnvtestGatewayClass(
 	t *testing.T,
 	apiClient client.Client,
 	cacheClient client.Client,
-	config Config,
+	config controller.Config,
 ) *gatewayv1.GatewayClass {
 	t.Helper()
 	gatewayClass := &gatewayv1.GatewayClass{
@@ -190,12 +194,12 @@ func testGatewayClassStatusSubresource(
 	t *testing.T,
 	apiClient client.Client,
 	cacheClient client.Client,
-	config Config,
+	config controller.Config,
 	gatewayClass *gatewayv1.GatewayClass,
 ) {
 	t.Helper()
 	beforeResourceVersion := gatewayClass.ResourceVersion
-	reconciler := &GatewayClassReconciler{
+	reconciler := &gatewayclass.Reconciler{
 		Client:    cacheClient,
 		APIReader: apiClient,
 		Config:    config,
@@ -272,7 +276,7 @@ func testGatewayBindingConflict(
 	t *testing.T,
 	apiClient client.Client,
 	cacheClient client.Client,
-	config Config,
+	config controller.Config,
 	namespace string,
 	className string,
 ) {
@@ -285,11 +289,11 @@ func testGatewayBindingConflict(
 		key:       client.ObjectKeyFromObject(gateway),
 		config:    config,
 	}
-	reconciler := &GatewayReconciler{
+	reconciler := &gatewaycontroller.Reconciler{
 		Client:      conflictClient,
 		APIReader:   apiClient,
 		Provider:    provider,
-		Coordinator: &GraphCoordinator{},
+		Coordinator: &graph.Coordinator{},
 		Config:      config,
 	}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
@@ -311,10 +315,10 @@ func testGatewayBindingConflict(
 	if current.Annotations["example.net/external-writer"] != "preserve" {
 		t.Fatalf("external annotation = %q, want preserve", current.Annotations["example.net/external-writer"])
 	}
-	if controllerutil.ContainsFinalizer(current, config.gatewayFinalizer()) ||
-		current.Annotations[config.gatewayClusterIDAnnotation()] != "" ||
-		current.Annotations[config.gatewayProjectIDAnnotation()] != "" ||
-		current.Annotations[config.gatewayListenerPortAnnotation()] != "" {
+	if controllerutil.ContainsFinalizer(current, config.GatewayFinalizer()) ||
+		current.Annotations[config.GatewayClusterIDAnnotation()] != "" ||
+		current.Annotations[config.GatewayProjectIDAnnotation()] != "" ||
+		current.Annotations[config.GatewayListenerPortAnnotation()] != "" {
 		t.Fatalf("stale binding was persisted: finalizers %#v, annotations %#v", current.Finalizers, current.Annotations)
 	}
 	if err := apiClient.Delete(t.Context(), current); err != nil {
@@ -327,16 +331,16 @@ func testGatewayBindingCheckpoint(
 	t *testing.T,
 	apiClient client.Client,
 	cacheClient client.Client,
-	config Config,
+	config controller.Config,
 	gateway *gatewayv1.Gateway,
 ) {
 	t.Helper()
 	provider := &recordingProvider{}
-	reconciler := &GatewayReconciler{
+	reconciler := &gatewaycontroller.Reconciler{
 		Client:      cacheClient,
 		APIReader:   apiClient,
 		Provider:    provider,
-		Coordinator: &GraphCoordinator{},
+		Coordinator: &graph.Coordinator{},
 		Config:      config,
 	}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
@@ -355,12 +359,12 @@ func testGatewayBindingCheckpoint(
 	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), current); err != nil {
 		t.Fatalf("get bound Gateway: %v", err)
 	}
-	if !controllerutil.ContainsFinalizer(current, config.gatewayFinalizer()) {
+	if !controllerutil.ContainsFinalizer(current, config.GatewayFinalizer()) {
 		t.Fatal("Gateway finalizer was not persisted")
 	}
-	if current.Annotations[config.gatewayListenerPortAnnotation()] != "80" ||
-		current.Annotations[config.gatewayClusterIDAnnotation()] != config.ClusterID ||
-		current.Annotations[config.gatewayProjectIDAnnotation()] != config.OpenStackProjectID {
+	if current.Annotations[config.GatewayListenerPortAnnotation()] != "80" ||
+		current.Annotations[config.GatewayClusterIDAnnotation()] != config.ClusterID ||
+		current.Annotations[config.GatewayProjectIDAnnotation()] != config.OpenStackProjectID {
 		t.Fatalf("Gateway binding annotations = %#v", current.Annotations)
 	}
 	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(current), current.ResourceVersion, false)
@@ -377,7 +381,7 @@ func testCacheFieldIndexes(
 	parentKey := client.ObjectKeyFromObject(gateway).String()
 	var gateways gatewayv1.GatewayList
 	if err := cacheClient.List(t.Context(), &gateways, client.MatchingFields{
-		indexGatewayByClass: string(gateway.Spec.GatewayClassName),
+		controller.IndexGatewayByClass: string(gateway.Spec.GatewayClassName),
 	}); err != nil {
 		t.Fatalf("list Gateways through class index: %v", err)
 	}
@@ -394,11 +398,11 @@ func testCacheFieldIndexes(
 		t.Fatalf("create unrelated HTTPRoute: %v", err)
 	}
 
-	waitForIndexedHTTPRoute(t, cacheClient, indexHTTPRouteByParentGateway, parentKey, route.Name)
+	waitForIndexedHTTPRoute(t, cacheClient, controller.IndexHTTPRouteByParentGateway, parentKey, route.Name)
 	waitForIndexedHTTPRoute(
 		t,
 		cacheClient,
-		indexHTTPRouteByBackendService,
+		controller.IndexHTTPRouteByBackendService,
 		client.ObjectKey{Namespace: route.Namespace, Name: "backend"}.String(),
 		route.Name,
 	)
@@ -408,12 +412,12 @@ func testFinalizersWithNewReconciler(
 	t *testing.T,
 	apiClient client.Client,
 	cacheClient client.Client,
-	config Config,
+	config controller.Config,
 	gatewayClass *gatewayv1.GatewayClass,
 	gateway *gatewayv1.Gateway,
 ) {
 	t.Helper()
-	classReconciler := &GatewayClassReconciler{Client: cacheClient, APIReader: apiClient, Config: config}
+	classReconciler := &gatewayclass.Reconciler{Client: cacheClient, APIReader: apiClient, Config: config}
 	classRequest := ctrl.Request{NamespacedName: types.NamespacedName{Name: gatewayClass.Name}}
 	if _, err := classReconciler.Reconcile(t.Context(), classRequest); err != nil {
 		t.Fatalf("add GatewayClass reference finalizer: %v", err)
@@ -439,11 +443,11 @@ func testFinalizersWithNewReconciler(
 	progressing := cloud.ProgressingOutcome("OpenStack cleanup is progressing", time.Second)
 	provider := &recordingProvider{}
 	provider.gatewayDeleteOut = &progressing
-	firstReconciler := &GatewayReconciler{
+	firstReconciler := &gatewaycontroller.Reconciler{
 		Client:      cacheClient,
 		APIReader:   apiClient,
 		Provider:    provider,
-		Coordinator: &GraphCoordinator{},
+		Coordinator: &graph.Coordinator{},
 		Config:      config,
 	}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
@@ -458,18 +462,18 @@ func testFinalizersWithNewReconciler(
 	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), currentGateway); err != nil {
 		t.Fatalf("get progressing Gateway deletion: %v", err)
 	}
-	if !controllerutil.ContainsFinalizer(currentGateway, config.gatewayFinalizer()) ||
-		currentGateway.Annotations[config.gatewayClusterIDAnnotation()] == "" {
+	if !controllerutil.ContainsFinalizer(currentGateway, config.GatewayFinalizer()) ||
+		currentGateway.Annotations[config.GatewayClusterIDAnnotation()] == "" {
 		t.Fatalf("progressing deletion dropped Gateway ownership: finalizers %#v, annotations %#v", currentGateway.Finalizers, currentGateway.Annotations)
 	}
 
 	ready := cloud.ReadyOutcome()
 	provider.gatewayDeleteOut = &ready
-	secondReconciler := &GatewayReconciler{
+	secondReconciler := &gatewaycontroller.Reconciler{
 		Client:      cacheClient,
 		APIReader:   apiClient,
 		Provider:    provider,
-		Coordinator: &GraphCoordinator{},
+		Coordinator: &graph.Coordinator{},
 		Config:      config,
 	}
 	if _, err := secondReconciler.Reconcile(t.Context(), request); err != nil {
@@ -495,7 +499,7 @@ type gatewayBindingConflictClient struct {
 	client.Client
 	apiClient client.Client
 	key       client.ObjectKey
-	config    Config
+	config    controller.Config
 	once      sync.Once
 	injected  bool
 	err       error
@@ -509,7 +513,7 @@ func (c *gatewayBindingConflictClient) Patch(
 ) error {
 	gateway, ok := object.(*gatewayv1.Gateway)
 	if !ok || client.ObjectKeyFromObject(gateway) != c.key ||
-		!controllerutil.ContainsFinalizer(gateway, c.config.gatewayFinalizer()) {
+		!controllerutil.ContainsFinalizer(gateway, c.config.GatewayFinalizer()) {
 		return c.Client.Patch(ctx, object, patch, options...)
 	}
 	c.once.Do(func() {
@@ -575,7 +579,7 @@ func waitForGatewayClassIndexEmpty(t *testing.T, reader client.Reader, className
 	t.Helper()
 	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
 		var gateways gatewayv1.GatewayList
-		if err := reader.List(ctx, &gateways, client.MatchingFields{indexGatewayByClass: className}); err != nil {
+		if err := reader.List(ctx, &gateways, client.MatchingFields{controller.IndexGatewayByClass: className}); err != nil {
 			return false, err
 		}
 		return len(gateways.Items) == 0, nil

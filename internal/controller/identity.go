@@ -22,7 +22,8 @@ import (
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
-func gatewayIdentity(cfg Config, gateway *gatewayv1.Gateway) cloud.Identity {
+// GatewayIdentity builds the immutable cloud identity for a Gateway.
+func GatewayIdentity(cfg Config, gateway *gatewayv1.Gateway) cloud.Identity {
 	return cloud.Identity{
 		OpenStackProjectID: cfg.OpenStackProjectID,
 		ClusterID:          cfg.ClusterID,
@@ -34,8 +35,10 @@ func gatewayIdentity(cfg Config, gateway *gatewayv1.Gateway) cloud.Identity {
 	}
 }
 
-func routeIdentity(cfg Config, gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) cloud.Identity {
-	value := gatewayIdentity(cfg, gateway)
+// RouteIdentity builds the immutable cloud identity for resources owned by an
+// HTTPRoute in a Gateway graph.
+func RouteIdentity(cfg Config, gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) cloud.Identity {
+	value := GatewayIdentity(cfg, gateway)
 	value.RouteNamespace = route.Namespace
 	value.RouteName = route.Name
 	value.RouteUID = string(route.UID)

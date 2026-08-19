@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package controller contains the Kubernetes-facing Gateway API reconcilers.
-// OpenStack SDK types are confined to internal/cloud/openstack.
+// Package controller contains Kubernetes-facing contracts shared by the
+// Gateway API reconciler packages. OpenStack SDK types are confined to
+// internal/cloud/openstack.
 package controller
 
 import (
@@ -46,23 +47,35 @@ var gatewayControllerNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0
 
 // Config is the cluster-wide controller configuration.
 type Config struct {
-	ControllerName          gatewayv1.GatewayController
-	ControllerVersion       string
-	OpenStackProjectID      string
-	ClusterID               string
-	Provider                string
-	VIPSubnetID             string
-	ExternalNetworkID       string
-	MemberSubnetID          string
-	MemberMode              MemberMode
-	NodeAddressType         corev1.NodeAddressType
-	HealthPath              string
+	// ControllerName is the exact Gateway API ownership identifier.
+	ControllerName gatewayv1.GatewayController
+	// ControllerVersion is recorded as trace metadata on cloud resources.
+	ControllerVersion string
+	// OpenStackProjectID is the authenticated project used in ownership checks.
+	OpenStackProjectID string
+	// ClusterID is the stable cluster identity stored on managed resources.
+	ClusterID string
+	// Provider is the Octavia provider selected for managed load balancers.
+	Provider string
+	// VIPSubnetID is the subnet used for Octavia virtual IPs.
+	VIPSubnetID string
+	// ExternalNetworkID is the optional network used for Floating IPs.
+	ExternalNetworkID string
+	// MemberSubnetID is the subnet associated with Octavia members.
+	MemberSubnetID string
+	// MemberMode selects how Service backends become Octavia members.
+	MemberMode MemberMode
+	// NodeAddressType selects the Node address used by NodePort members.
+	NodeAddressType corev1.NodeAddressType
+	// HealthPath is the HTTP path used by Octavia health monitors.
+	HealthPath string
+	// OpenStackResyncInterval controls periodic observation after convergence.
 	OpenStackResyncInterval time.Duration
 }
 
 // Validate rejects configuration that could make ownership ambiguous.
 func (c Config) Validate() error {
-	if len(c.ControllerName) > 253 || !gatewayControllerNamePattern.MatchString(string(c.ControllerName)) {
+	if !IsValidControllerName(c.ControllerName) {
 		return fmt.Errorf("controller name %q must be a domain prefixed path", c.ControllerName)
 	}
 	for _, field := range []struct {
@@ -96,64 +109,101 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Controller-scoped metadata keys include a digest of the complete controller
-// name. The DNS prefix alone is not unique: two controllers may legitimately
-// share a domain while owning different GatewayClasses.
-func (c Config) gatewayFinalizer() string {
-	return c.domain() + "/gateway-finalizer-" + c.controllerKey()
-}
-func (c Config) routeFinalizer() string {
-	return c.domain() + "/httproute-finalizer-" + c.controllerKey()
+// IsValidControllerName reports whether a Gateway controller name can be used
+// to derive controller-scoped metadata keys.
+func IsValidControllerName(name gatewayv1.GatewayController) bool {
+	return len(name) <= 253 && gatewayControllerNamePattern.MatchString(string(name))
 }
 
-// routeBindingFinalizer anchors the mutable annotations needed to find an
+// GatewayFinalizer returns the controller-scoped Gateway finalizer. The key
+// includes a digest because the DNS prefix alone does not identify a
+// controller name uniquely.
+func (c Config) GatewayFinalizer() string {
+	return c.Domain() + "/gateway-finalizer-" + c.controllerKey()
+}
+
+// RouteFinalizer returns the controller-scoped HTTPRoute finalizer.
+func (c Config) RouteFinalizer() string {
+	return c.Domain() + "/httproute-finalizer-" + c.controllerKey()
+}
+
+// RouteBindingFinalizer returns the finalizer that anchors the mutable
+// annotations needed to find an
 // HTTPRoute's OpenStack graph. Kubernetes users can edit annotations, so a
 // digest in a separate controller finalizer makes accidental or partial
 // binding changes fail closed instead of authorizing a lookup with a forged
 // tuple. It is not intended as a security boundary for principals that may
 // also edit finalizers.
-func (c Config) routeBindingFinalizer(clusterID, projectID, gatewayNamespace, gatewayName, gatewayUID string) string {
+func (c Config) RouteBindingFinalizer(clusterID, projectID, gatewayNamespace, gatewayName, gatewayUID string) string {
 	input := strings.Join([]string{clusterID, projectID, gatewayNamespace, gatewayName, gatewayUID}, "\x00")
 	digest := sha256.Sum256([]byte(input))
-	return c.routeBindingFinalizerPrefix() + fmt.Sprintf("%x", digest[:6])
+	return c.RouteBindingFinalizerPrefix() + fmt.Sprintf("%x", digest[:6])
 }
 
-func (c Config) routeBindingFinalizerPrefix() string {
-	return c.domain() + "/httproute-binding-" + c.controllerKey() + "-"
+// RouteBindingFinalizerPrefix returns the controller-scoped prefix shared by
+// HTTPRoute binding finalizers.
+func (c Config) RouteBindingFinalizerPrefix() string {
+	return c.Domain() + "/httproute-binding-" + c.controllerKey() + "-"
 }
 
-func (c Config) domain() string { return strings.SplitN(string(c.ControllerName), "/", 2)[0] }
-func (c Config) routeGatewayNamespaceAnnotation() string {
-	return c.domain() + "/route-gateway-namespace-" + c.controllerKey()
-}
-func (c Config) routeGatewayNameAnnotation() string {
-	return c.domain() + "/route-gateway-name-" + c.controllerKey()
-}
-func (c Config) routeGatewayUIDAnnotation() string {
-	return c.domain() + "/route-gateway-uid-" + c.controllerKey()
-}
-func (c Config) gatewayListenerPortAnnotation() string {
-	return c.domain() + "/gateway-listener-port-" + c.controllerKey()
-}
-func (c Config) gatewayClusterIDAnnotation() string {
-	return c.domain() + "/gateway-cluster-id-" + c.controllerKey()
-}
-func (c Config) gatewayProjectIDAnnotation() string {
-	return c.domain() + "/gateway-project-id-" + c.controllerKey()
-}
-func (c Config) routeClusterIDAnnotation() string {
-	return c.domain() + "/route-cluster-id-" + c.controllerKey()
-}
-func (c Config) routeProjectIDAnnotation() string {
-	return c.domain() + "/route-project-id-" + c.controllerKey()
+// Domain returns the DNS prefix of the configured Gateway controller name.
+func (c Config) Domain() string { return strings.SplitN(string(c.ControllerName), "/", 2)[0] }
+
+// RouteGatewayNamespaceAnnotation returns the key that records the bound
+// Gateway namespace on an HTTPRoute.
+func (c Config) RouteGatewayNamespaceAnnotation() string {
+	return c.Domain() + "/route-gateway-namespace-" + c.controllerKey()
 }
 
-// routeCleanupFailureAnnotation stores a reason that contains no sensitive data
+// RouteGatewayNameAnnotation returns the key that records the bound Gateway
+// name on an HTTPRoute.
+func (c Config) RouteGatewayNameAnnotation() string {
+	return c.Domain() + "/route-gateway-name-" + c.controllerKey()
+}
+
+// RouteGatewayUIDAnnotation returns the key that records the bound Gateway UID
+// on an HTTPRoute.
+func (c Config) RouteGatewayUIDAnnotation() string {
+	return c.Domain() + "/route-gateway-uid-" + c.controllerKey()
+}
+
+// GatewayListenerPortAnnotation returns the key that records the listener port
+// in a Gateway binding.
+func (c Config) GatewayListenerPortAnnotation() string {
+	return c.Domain() + "/gateway-listener-port-" + c.controllerKey()
+}
+
+// GatewayClusterIDAnnotation returns the key that records the cluster ID in a
+// Gateway binding.
+func (c Config) GatewayClusterIDAnnotation() string {
+	return c.Domain() + "/gateway-cluster-id-" + c.controllerKey()
+}
+
+// GatewayProjectIDAnnotation returns the key that records the OpenStack
+// project ID in a Gateway binding.
+func (c Config) GatewayProjectIDAnnotation() string {
+	return c.Domain() + "/gateway-project-id-" + c.controllerKey()
+}
+
+// RouteClusterIDAnnotation returns the key that records the cluster ID in an
+// HTTPRoute binding.
+func (c Config) RouteClusterIDAnnotation() string {
+	return c.Domain() + "/route-cluster-id-" + c.controllerKey()
+}
+
+// RouteProjectIDAnnotation returns the key that records the OpenStack project
+// ID in an HTTPRoute binding.
+func (c Config) RouteProjectIDAnnotation() string {
+	return c.Domain() + "/route-project-id-" + c.controllerKey()
+}
+
+// RouteCleanupFailureAnnotation returns the key used to store a cleanup reason
 // when Gateway API status has no valid parent entry for a cleanup diagnostic.
+// The stored reason contains no sensitive data.
 // It suppresses duplicate Events and is not part of the OpenStack ownership
 // identity.
-func (c Config) routeCleanupFailureAnnotation() string {
-	return c.domain() + "/httproute-cleanup-failure-" + c.controllerKey()
+func (c Config) RouteCleanupFailureAnnotation() string {
+	return c.Domain() + "/httproute-cleanup-failure-" + c.controllerKey()
 }
 
 func (c Config) controllerKey() string {

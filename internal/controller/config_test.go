@@ -17,14 +17,10 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -43,18 +39,18 @@ func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if got := cfg.gatewayFinalizer(); got != "example.net/gateway-finalizer-"+cfg.controllerKey() {
+	if got := cfg.GatewayFinalizer(); got != "example.net/gateway-finalizer-"+cfg.controllerKey() {
 		t.Fatalf("gatewayFinalizer() = %q", got)
 	}
-	if got := cfg.routeFinalizer(); got != "example.net/httproute-finalizer-"+cfg.controllerKey() {
+	if got := cfg.RouteFinalizer(); got != "example.net/httproute-finalizer-"+cfg.controllerKey() {
 		t.Fatalf("routeFinalizer() = %q", got)
 	}
-	if got := cfg.routeCleanupFailureAnnotation(); got != "example.net/httproute-cleanup-failure-"+cfg.controllerKey() {
+	if got := cfg.RouteCleanupFailureAnnotation(); got != "example.net/httproute-cleanup-failure-"+cfg.controllerKey() {
 		t.Fatalf("routeCleanupFailureAnnotation() = %q", got)
 	}
 	other := cfg
 	other.ControllerName = "example.net/another-controller"
-	if cfg.gatewayFinalizer() == other.gatewayFinalizer() || cfg.routeGatewayUIDAnnotation() == other.routeGatewayUIDAnnotation() {
+	if cfg.GatewayFinalizer() == other.GatewayFinalizer() || cfg.RouteGatewayUIDAnnotation() == other.RouteGatewayUIDAnnotation() {
 		t.Fatal("controller-scoped metadata keys collide for controllers sharing a DNS domain")
 	}
 }
@@ -90,32 +86,5 @@ func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 				t.Fatal("Validate() unexpectedly succeeded")
 			}
 		})
-	}
-}
-
-func TestStatusForRouteBuildError(t *testing.T) {
-	notFound := fmt.Errorf("get backend Service: %w", apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, "backend"))
-	status := statusForRouteBuildError(notFound)
-	if status.resolved != metav1.ConditionFalse || status.resolvedReason != string(gatewayv1.RouteReasonBackendNotFound) {
-		t.Fatalf("not-found status = %#v", status)
-	}
-	pending := statusForRouteBuildError(newRouteBuildError(routeErrorPending, "backend Service backend has no ready endpoints"))
-	if pending.accepted != metav1.ConditionTrue || pending.programmedReason != "Pending" {
-		t.Fatalf("pending status = %#v", pending)
-	}
-	untyped := statusForRouteBuildError(fmt.Errorf("backend Service backend has no ready endpoints"))
-	if untyped.accepted != metav1.ConditionFalse || untyped.programmedReason != "Invalid" {
-		t.Fatalf("untyped status = %#v", untyped)
-	}
-	rejected := rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "unsupported")
-	if rejected.resolved != metav1.ConditionUnknown || rejected.resolvedReason != string(gatewayv1.RouteReasonPending) {
-		t.Fatalf("rejected status = %#v", rejected)
-	}
-}
-
-func TestSupportedMatchDefaultsToRootPrefix(t *testing.T) {
-	_, pathType, value, err := supportedMatch(nil)
-	if err != nil || pathType != "PathPrefix" || value != "/" {
-		t.Fatalf("supportedMatch(nil) = %q %q, %v", pathType, value, err)
 	}
 }

@@ -23,7 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func sortedRequests(keys map[types.NamespacedName]struct{}) []reconcile.Request {
+// SortedRequests converts object keys to reconcile requests in deterministic
+// namespace and name order.
+func SortedRequests(keys map[types.NamespacedName]struct{}) []reconcile.Request {
 	ordered := make([]types.NamespacedName, 0, len(keys))
 	for key := range keys {
 		ordered = append(ordered, key)
