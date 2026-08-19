@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -100,9 +99,13 @@ func TestStatusForRouteBuildError(t *testing.T) {
 	if status.resolved != metav1.ConditionFalse || status.resolvedReason != string(gatewayv1.RouteReasonBackendNotFound) {
 		t.Fatalf("not-found status = %#v", status)
 	}
-	pending := statusForRouteBuildError(errors.New("backend Service backend has no ready endpoints"))
+	pending := statusForRouteBuildError(newRouteBuildError(routeErrorPending, "backend Service backend has no ready endpoints"))
 	if pending.accepted != metav1.ConditionTrue || pending.programmedReason != "Pending" {
 		t.Fatalf("pending status = %#v", pending)
+	}
+	untyped := statusForRouteBuildError(fmt.Errorf("backend Service backend has no ready endpoints"))
+	if untyped.accepted != metav1.ConditionFalse || untyped.programmedReason != "Invalid" {
+		t.Fatalf("untyped status = %#v", untyped)
 	}
 	rejected := rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "unsupported")
 	if rejected.resolved != metav1.ConditionUnknown || rejected.resolvedReason != string(gatewayv1.RouteReasonPending) {

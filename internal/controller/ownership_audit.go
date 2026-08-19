@@ -58,7 +58,6 @@ func CollectOwnershipSnapshot(ctx context.Context, reader client.Reader, config 
 		return audit.KubernetesSnapshot{}, fmt.Errorf("list HTTPRoutes for ownership audit: %w", err)
 	}
 
-	gatewayReconciler := GatewayReconciler{Config: config}
 	for index := range gateways.Items {
 		gateway := &gateways.Items[index]
 		if !gatewayHasControllerBinding(config, gateway) {
@@ -69,7 +68,7 @@ func CollectOwnershipSnapshot(ctx context.Context, reader client.Reader, config 
 			snapshot.Issues = append(snapshot.Issues, invalidBindingIssue(object))
 			continue
 		}
-		identity := gatewayReconciler.storedGatewayIdentity(gateway)
+		identity := storedGatewayIdentity(config, gateway)
 		if err := cloud.ValidateGatewayIdentity(identity); err != nil {
 			snapshot.Issues = append(snapshot.Issues, invalidBindingIssue(object))
 			continue
@@ -80,14 +79,13 @@ func CollectOwnershipSnapshot(ctx context.Context, reader client.Reader, config 
 		})
 	}
 
-	routeReconciler := HTTPRouteReconciler{Config: config}
 	for index := range routes.Items {
 		route := &routes.Items[index]
-		if !routeHasControllerBinding(config, &routeReconciler, route) {
+		if !routeHasControllerBinding(config, route) {
 			continue
 		}
 		object := routeAuditReference(route)
-		identity, present, err := routeReconciler.storedRouteIdentity(route)
+		identity, present, err := storedRouteIdentity(config, route)
 		if err != nil || !present {
 			snapshot.Issues = append(snapshot.Issues, invalidBindingIssue(object))
 			continue
@@ -115,24 +113,6 @@ func validateOwnershipSnapshotConfig(config Config) error {
 		return fmt.Errorf("validate ownership audit scope: %w", err)
 	}
 	return nil
-}
-
-func routeHasControllerBinding(config Config, reconciler *HTTPRouteReconciler, route *gatewayv1.HTTPRoute) bool {
-	if slices.Contains(route.Finalizers, config.routeFinalizer()) || reconciler.hasRouteBindingFinalizer(route) {
-		return true
-	}
-	for _, key := range []string{
-		config.routeGatewayNamespaceAnnotation(),
-		config.routeGatewayNameAnnotation(),
-		config.routeGatewayUIDAnnotation(),
-		config.routeClusterIDAnnotation(),
-		config.routeProjectIDAnnotation(),
-	} {
-		if route.Annotations[key] != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func gatewayAuditReference(gateway *gatewayv1.Gateway) audit.ObjectReference {

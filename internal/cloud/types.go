@@ -130,15 +130,18 @@ type Provider interface {
 
 // ValidateGatewayIdentity verifies the common Gateway ownership tuple.
 func ValidateGatewayIdentity(id Identity) error {
-	for name, value := range map[string]string{
-		"cluster ID":        id.ClusterID,
-		"controller":        id.Controller,
-		"Gateway namespace": id.GatewayNamespace,
-		"Gateway name":      id.GatewayName,
-		"Gateway UID":       id.GatewayUID,
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "cluster ID", value: id.ClusterID},
+		{name: "controller", value: id.Controller},
+		{name: "Gateway namespace", value: id.GatewayNamespace},
+		{name: "Gateway name", value: id.GatewayName},
+		{name: "Gateway UID", value: id.GatewayUID},
 	} {
-		if value == "" {
-			return fmt.Errorf("%s must not be empty", name)
+		if field.value == "" {
+			return fmt.Errorf("%s must not be empty", field.name)
 		}
 	}
 	return nil
@@ -150,13 +153,16 @@ func ValidateRouteIdentity(id Identity) error {
 	if err := ValidateGatewayIdentity(id); err != nil {
 		return err
 	}
-	for name, value := range map[string]string{
-		"HTTPRoute namespace": id.RouteNamespace,
-		"HTTPRoute name":      id.RouteName,
-		"HTTPRoute UID":       id.RouteUID,
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "HTTPRoute namespace", value: id.RouteNamespace},
+		{name: "HTTPRoute name", value: id.RouteName},
+		{name: "HTTPRoute UID", value: id.RouteUID},
 	} {
-		if value == "" {
-			return fmt.Errorf("%s must not be empty", name)
+		if field.value == "" {
+			return fmt.Errorf("%s must not be empty", field.name)
 		}
 	}
 	return nil

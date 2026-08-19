@@ -26,7 +26,6 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -75,24 +74,7 @@ func (r *HTTPRouteReconciler) newHTTPRouteScope(
 	if route.DeletionTimestamp.IsZero() {
 		return scope, true, nil
 	}
-	responsible := controllerutil.ContainsFinalizer(route, r.Config.routeFinalizer()) ||
-		r.hasRouteBindingFinalizer(route) || routeHasBindingAnnotations(r.Config, route)
-	return scope, responsible, nil
-}
-
-func routeHasBindingAnnotations(config Config, route *gatewayv1.HTTPRoute) bool {
-	for _, key := range []string{
-		config.routeGatewayNamespaceAnnotation(),
-		config.routeGatewayNameAnnotation(),
-		config.routeGatewayUIDAnnotation(),
-		config.routeClusterIDAnnotation(),
-		config.routeProjectIDAnnotation(),
-	} {
-		if route.Annotations[key] != "" {
-			return true
-		}
-	}
-	return false
+	return scope, routeHasControllerBinding(r.Config, route), nil
 }
 
 func (s *httpRouteScope) setStatuses(updates []parentStatusUpdate) {
