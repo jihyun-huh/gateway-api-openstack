@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package inventory
 
 import (
 	"context"
@@ -31,6 +31,8 @@ import (
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/clients"
+	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
 )
 
 func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {
@@ -39,7 +41,7 @@ func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {
 	fixture.paginate = true
 
 	provider := fixture.provider()
-	inventory, err := provider.Scan(context.Background(), auditTestScope(identity.value), auditTestRecords(identity.value))
+	inventory, err := provider.Scan(context.Background(), auditTestScope(identity.Value()), auditTestRecords(identity.Value()))
 	if err != nil {
 		t.Fatalf("Scan() error = %v", err)
 	}
@@ -84,19 +86,15 @@ func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {
 		if request.method != http.MethodGet {
 			t.Errorf("Scan() sent mutating request %s %s", request.method, request.path)
 		}
-		if got := request.query.Get("project_id"); got != identity.value.OpenStackProjectID {
-			t.Errorf("%s query project_id = %q, want %q", request.path, got, identity.value.OpenStackProjectID)
+		if got := request.query.Get("project_id"); got != identity.Value().OpenStackProjectID {
+			t.Errorf("%s query project_id = %q, want %q", request.path, got, identity.Value().OpenStackProjectID)
 		}
 	}
 	if fixture.mutatingRequests != 0 {
 		t.Fatalf("Scan() sent %d mutating requests, want 0", fixture.mutatingRequests)
 	}
 
-	wantScopeTags := []string{
-		identityPrefix + "managed=true",
-		tag("cluster", identity.value.ClusterID),
-		tag("controller", identity.value.Controller),
-	}
+	wantScopeTags := openstackidentity.ScopeTags(identity.Value().ClusterID, identity.Value().Controller)
 	slices.Sort(wantScopeTags)
 	for _, path := range []string{"/lbaas/loadbalancers", "/lbaas/listeners", "/lbaas/pools", "/lbaas/healthmonitors"} {
 		request, ok := fixture.findRequest(path, func(query url.Values) bool {
@@ -149,7 +147,7 @@ func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {
 		"raw-private-description",
 		"198.51.100.44",
 		"203.0.113.44",
-		identity.value.OpenStackProjectID,
+		identity.Value().OpenStackProjectID,
 		strings.Join(safetyGatewayTags(t, identity, roleLoadBalancer), ","),
 		identity.GatewayDescription(roleFloatingIP),
 	} {
@@ -161,7 +159,7 @@ func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {
 
 func TestScanClassifiesOwnershipFindings(t *testing.T) {
 	current := safetyTestIdentity(t)
-	currentGateway := auditGatewayIdentity(current.value)
+	currentGateway := auditGatewayIdentity(current.Value())
 
 	tests := []struct {
 		name             string
@@ -184,7 +182,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 			name: "stale Gateway UID",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
 				fixture.keepOnlyLoadBalancers()
-				stale := current.value
+				stale := current.Value()
 				stale.GatewayUID = "deleted-gateway-uid"
 				fixture.loadBalancers[0]["tags"] = auditGatewayTagsFor(t, stale, roleLoadBalancer)
 			},
@@ -278,7 +276,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newAuditScanFixture(t, current)
 			test.configure(t, fixture)
-			inventory, err := fixture.provider().Scan(context.Background(), auditTestScope(current.value), test.records)
+			inventory, err := fixture.provider().Scan(context.Background(), auditTestScope(current.Value()), test.records)
 			if err != nil {
 				t.Fatalf("Scan() error = %v", err)
 			}
@@ -307,8 +305,8 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 
 func TestScanSortsFindingsDeterministically(t *testing.T) {
 	base := safetyTestIdentity(t)
-	identityA := auditIdentityForGateway(t, base.value, "gateway-a", "gateway-a-uid")
-	identityB := auditIdentityForGateway(t, base.value, "gateway-b", "gateway-b-uid")
+	identityA := auditIdentityForGateway(t, base.Value(), "gateway-a", "gateway-a-uid")
+	identityB := auditIdentityForGateway(t, base.Value(), "gateway-b", "gateway-b-uid")
 	fixture := newAuditScanFixture(t, base)
 	fixture.keepOnlyLoadBalancers()
 	fixture.loadBalancers = []map[string]any{
@@ -316,7 +314,7 @@ func TestScanSortsFindingsDeterministically(t *testing.T) {
 		auditLoadBalancer(t, "load-balancer-a", "vip-port-a", identityA),
 	}
 
-	first, err := fixture.provider().Scan(context.Background(), auditTestScope(base.value), nil)
+	first, err := fixture.provider().Scan(context.Background(), auditTestScope(base.Value()), nil)
 	if err != nil {
 		t.Fatalf("first Scan() error = %v", err)
 	}
@@ -325,7 +323,7 @@ func TestScanSortsFindingsDeterministically(t *testing.T) {
 	}
 
 	slices.Reverse(fixture.loadBalancers)
-	second, err := fixture.provider().Scan(context.Background(), auditTestScope(base.value), nil)
+	second, err := fixture.provider().Scan(context.Background(), auditTestScope(base.Value()), nil)
 	if err != nil {
 		t.Fatalf("second Scan() error = %v", err)
 	}
@@ -336,7 +334,7 @@ func TestScanSortsFindingsDeterministically(t *testing.T) {
 
 func TestScanOmitsUnattributedDetachedFloatingIP(t *testing.T) {
 	current := safetyTestIdentity(t)
-	foreignValue := current.value
+	foreignValue := current.Value()
 	foreignValue.ClusterID = "another-cluster"
 	foreignValue.Controller = "other.example/gateway-controller"
 	foreignValue.GatewayName = "other-gateway"
@@ -344,9 +342,9 @@ func TestScanOmitsUnattributedDetachedFloatingIP(t *testing.T) {
 	foreignValue.RouteNamespace = ""
 	foreignValue.RouteName = ""
 	foreignValue.RouteUID = ""
-	foreign, err := NewIdentity(foreignValue)
+	foreign, err := openstackidentity.NewIdentity(foreignValue)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	fixture := newAuditScanFixture(t, current)
 	fixture.loadBalancers = nil
@@ -357,16 +355,16 @@ func TestScanOmitsUnattributedDetachedFloatingIP(t *testing.T) {
 	fixture.policies = nil
 	fixture.rules = nil
 	fixture.floatingIPs = []map[string]any{{
-		"id": "floating-ip-foreign", "project_id": current.value.OpenStackProjectID,
+		"id": "floating-ip-foreign", "project_id": current.Value().OpenStackProjectID,
 		"port_id": "", "description": foreign.GatewayDescription(roleFloatingIP),
 	}}
 
 	inventory, err := fixture.provider().Scan(
 		context.Background(),
-		auditTestScope(current.value),
+		auditTestScope(current.Value()),
 		[]audit.OwnershipRecord{{
-			Identity: auditGatewayIdentity(current.value),
-			Objects:  []audit.ObjectReference{auditGatewayReference(current.value)},
+			Identity: auditGatewayIdentity(current.Value()),
+			Objects:  []audit.ObjectReference{auditGatewayReference(current.Value())},
 		}},
 	)
 	if err != nil {
@@ -383,11 +381,11 @@ func TestScanRejectsProjectMismatchBeforeRequest(t *testing.T) {
 		requests++
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := NewScanner(clients.ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		Network:      safetyServiceClient(handler),
 		ProjectID:    "project-a",
-	}, ProviderConfig{})
+	}, 0)
 
 	_, err := provider.Scan(context.Background(), audit.Scope{
 		ClusterID:          "test-cluster",
@@ -429,7 +427,7 @@ type auditScanFixture struct {
 	mutatingRequests int
 }
 
-func newAuditScanFixture(t *testing.T, identity Identity) *auditScanFixture {
+func newAuditScanFixture(t *testing.T, identity openstackidentity.Identity) *auditScanFixture {
 	t.Helper()
 	loadBalancerTags := append(safetyGatewayTags(t, identity, roleLoadBalancer), "raw-private-tag=customer-a")
 	listenerTags := safetyGatewayTags(t, identity, roleListener)
@@ -442,54 +440,54 @@ func newAuditScanFixture(t *testing.T, identity Identity) *auditScanFixture {
 	return &auditScanFixture{
 		t: t,
 		loadBalancers: []map[string]any{{
-			"id": "load-balancer-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "load-balancer-1", "project_id": identity.Value().OpenStackProjectID,
 			"provider": "amphora", "provisioning_status": "ACTIVE",
 			"vip_port_id": "vip-port-1", "vip_address": "198.51.100.44", "tags": loadBalancerTags,
 		}},
 		listeners: []map[string]any{{
-			"id": "listener-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "listener-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "tags": listenerTags,
 			"loadbalancers": []any{map[string]any{"id": "load-balancer-1"}},
 		}},
 		pools: []map[string]any{{
-			"id": "pool-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "pool-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "tags": poolTags,
 			"loadbalancers": []any{map[string]any{"id": "load-balancer-1"}},
 		}},
 		members: []map[string]any{{
-			"id": "member-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "member-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "pool_id": "pool-1", "tags": memberTags,
 			"address": "192.0.2.10",
 		}},
 		monitors: []map[string]any{{
-			"id": "monitor-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "monitor-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "tags": monitorTags,
 			"pools": []any{map[string]any{"id": "pool-1"}},
 		}},
 		policies: []map[string]any{{
-			"id": "policy-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "policy-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "listener_id": "listener-1",
 			"redirect_pool_id": "pool-1", "tags": policyTags,
 		}},
 		rules: []map[string]any{{
-			"id": "rule-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "rule-1", "project_id": identity.Value().OpenStackProjectID,
 			"provisioning_status": "ACTIVE", "policy_id": "policy-1", "tags": ruleTags,
 		}},
 		floatingIPs: []map[string]any{{
-			"id": "floating-ip-1", "project_id": identity.value.OpenStackProjectID,
+			"id": "floating-ip-1", "project_id": identity.Value().OpenStackProjectID,
 			"port_id": "vip-port-1", "floating_ip_address": "203.0.113.44",
 			"description": identity.GatewayDescription(roleFloatingIP) + "; operator-note=raw-private-description",
 		}},
 	}
 }
 
-func (f *auditScanFixture) provider() *Provider {
+func (f *auditScanFixture) provider() *Scanner {
 	handler := http.HandlerFunc(f.serveHTTP)
-	return NewProvider(ServiceClients{
+	return NewScanner(clients.ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		Network:      safetyServiceClient(handler),
 		ProjectID:    "project-a",
-	}, ProviderConfig{})
+	}, 0)
 }
 
 func (f *auditScanFixture) serveHTTP(w http.ResponseWriter, request *http.Request) {
@@ -628,24 +626,24 @@ func auditRouteReference(identity cloud.Identity) audit.ObjectReference {
 	}
 }
 
-func auditIdentityForGateway(t *testing.T, base cloud.Identity, name, uid string) Identity {
+func auditIdentityForGateway(t *testing.T, base cloud.Identity, name, uid string) openstackidentity.Identity {
 	t.Helper()
 	base.GatewayName = name
 	base.GatewayUID = uid
 	base.RouteNamespace = ""
 	base.RouteName = ""
 	base.RouteUID = ""
-	identity, err := NewIdentity(base)
+	identity, err := openstackidentity.NewIdentity(base)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	return identity
 }
 
-func auditLoadBalancer(t *testing.T, id, portID string, identity Identity) map[string]any {
+func auditLoadBalancer(t *testing.T, id, portID string, identity openstackidentity.Identity) map[string]any {
 	t.Helper()
 	return map[string]any{
-		"id": id, "project_id": identity.value.OpenStackProjectID,
+		"id": id, "project_id": identity.Value().OpenStackProjectID,
 		"provider": "amphora", "provisioning_status": "ACTIVE",
 		"vip_port_id": portID, "tags": safetyGatewayTags(t, identity, roleLoadBalancer),
 	}
@@ -653,9 +651,9 @@ func auditLoadBalancer(t *testing.T, id, portID string, identity Identity) map[s
 
 func auditGatewayTagsFor(t *testing.T, identity cloud.Identity, role string) []string {
 	t.Helper()
-	providerIdentity, err := NewIdentity(identity)
+	providerIdentity, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	return safetyGatewayTags(t, providerIdentity, role)
 }

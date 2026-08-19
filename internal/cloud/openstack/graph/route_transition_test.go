@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -738,8 +738,12 @@ func TestEnsureRouteValidatesEveryDescendantBeforeMutation(t *testing.T) {
 
 func TestEnsureRouteDoesNotRepairParentForStaleRouteUID(t *testing.T) {
 	identity := safetyTestIdentity(t)
-	staleIdentity := identity
-	staleIdentity.value.RouteUID = "previous-route-uid"
+	staleValue := identity.Value()
+	staleValue.RouteUID = "previous-route-uid"
+	staleIdentity, err := NewIdentity(staleValue)
+	if err != nil {
+		t.Fatalf("NewIdentity() error = %v", err)
+	}
 	requests := &gatewayTransitionRequests{}
 	baseHandler := convergedRouteGraphHandler(t, requests, identity, false, true)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -758,7 +762,7 @@ func TestEnsureRouteDoesNotRepairParentForStaleRouteUID(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
 
-	_, err := provider.EnsureRoute(context.Background(), routeTransitionSpec(identity))
+	_, err = provider.EnsureRoute(context.Background(), routeTransitionSpec(identity))
 	if !errors.Is(err, cloud.ErrOwnershipConflict) {
 		t.Fatalf("EnsureRoute() error = %v, want ownership conflict", err)
 	}
@@ -860,7 +864,7 @@ func TestDeleteRoutePendingReturnsWithoutMutation(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 13 * time.Second})
 
-	outcome, err := provider.DeleteRoute(context.Background(), identity.value)
+	outcome, err := provider.DeleteRoute(context.Background(), identity.Value())
 	if err != nil {
 		t.Fatalf("DeleteRoute() error = %v", err)
 	}
@@ -973,7 +977,7 @@ func TestDeleteRouteConvergesInDeterministicOrder(t *testing.T) {
 	ready := false
 	for attempt := 0; attempt < 10; attempt++ {
 		before := len(requests.mutationPaths())
-		outcome, err := provider.DeleteRoute(context.Background(), identity.value)
+		outcome, err := provider.DeleteRoute(context.Background(), identity.Value())
 		if err != nil {
 			t.Fatalf("DeleteRoute() attempt %d error = %v", attempt+1, err)
 		}
@@ -1008,7 +1012,7 @@ func TestDeleteRouteConvergesInDeterministicOrder(t *testing.T) {
 
 func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 	return cloud.RouteSpec{
-		Identity: identity.value,
+		Identity: identity.Value(),
 		Gateway: cloud.GatewayState{
 			LoadBalancerID: "load-balancer-1",
 			VIPPortID:      "vip-port",

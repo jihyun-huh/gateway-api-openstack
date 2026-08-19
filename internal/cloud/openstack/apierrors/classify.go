@@ -14,7 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+// Package apierrors maps Gophercloud and OpenStack failures to the
+// provider-neutral error categories used by the controllers.
+package apierrors
 
 import (
 	"context"
@@ -34,10 +36,10 @@ import (
 
 const openStackInvalidTokenStatus = 498
 
-// classifyOpenStackError translates provider failures at the adapter boundary.
+// Classify translates provider failures at the adapter boundary.
 // A 404 remains unclassified because its meaning depends on the resource and
 // lifecycle phase that issued the request.
-func classifyOpenStackError(err error) error {
+func Classify(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -54,7 +56,7 @@ func classifyOpenStackError(err error) error {
 		return classifyWrappedOpenStackError(err, original)
 	}
 	if reauthenticationErr, ok := reauthenticationFailure(err); ok {
-		classified := classifyOpenStackError(reauthenticationErr)
+		classified := Classify(reauthenticationErr)
 		category, found := cloud.ErrorCategoryOf(classified)
 		if found && (category == cloud.ErrorCategoryTimeout ||
 			category == cloud.ErrorCategoryRateLimit ||
@@ -81,10 +83,10 @@ func classifyOpenStackError(err error) error {
 	return err
 }
 
-// classifyOctaviaMutationError handles the 409 contract documented by
+// ClassifyOctaviaMutation handles the 409 contract documented by
 // Octavia for a load balancer graph that has another action in progress. Read
 // paths and Neutron conflicts keep their own lifecycle-specific handling.
-func classifyOctaviaMutationError(err error) error {
+func ClassifyOctaviaMutation(err error) error {
 	status, _, ok := openStackResponse(err)
 	if err != nil && ok && status == http.StatusConflict {
 		return cloud.NewProviderError(cloud.ErrorCategoryRetryableService, err)
@@ -122,7 +124,7 @@ func categoryForResponse(status int, body []byte) (cloud.ErrorCategory, bool) {
 }
 
 func classifyWrappedOpenStackError(wrapper, cause error) error {
-	classified := classifyOpenStackError(cause)
+	classified := Classify(cause)
 	category, ok := cloud.ErrorCategoryOf(classified)
 	if !ok {
 		return wrapper

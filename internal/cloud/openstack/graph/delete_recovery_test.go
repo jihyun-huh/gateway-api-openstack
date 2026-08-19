@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -89,7 +89,7 @@ func TestDeleteGatewayRevalidatesLoadBalancerAfterGet(t *testing.T) {
 				ProjectID:    "project-a",
 			}, ProviderConfig{})
 
-			_, err := provider.DeleteGateway(context.Background(), identity.value)
+			_, err := provider.DeleteGateway(context.Background(), identity.Value())
 			if !errors.Is(err, cloud.ErrOwnershipConflict) {
 				t.Fatalf("DeleteGateway() error = %v, want ownership conflict", err)
 			}

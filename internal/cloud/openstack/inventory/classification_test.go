@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package inventory
 
 import (
 	"strings"
@@ -22,13 +22,16 @@ import (
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
 )
+
+const testIdentityPrefix = "gateway-api-openstack."
 
 func TestClassifyAuditCandidates(t *testing.T) {
 	identity := auditTestCloudIdentity()
-	wrapped, err := NewIdentity(identity)
+	wrapped, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	scopeTags := auditTestScopeTags(identity)
 	gatewayRecord := preparedAuditRecord{
@@ -113,9 +116,9 @@ func TestClassifyAuditCandidates(t *testing.T) {
 		routeIdentity.RouteNamespace = "app"
 		routeIdentity.RouteName = "route"
 		routeIdentity.RouteUID = "route-uid"
-		routeWrapped, err := NewIdentity(routeIdentity)
+		routeWrapped, err := openstackidentity.NewIdentity(routeIdentity)
 		if err != nil {
-			t.Fatalf("NewIdentity() error = %v", err)
+			t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 		}
 		routeRecord := preparedAuditRecord{
 			record: audit.OwnershipRecord{
@@ -138,9 +141,9 @@ func TestClassifyAuditCandidates(t *testing.T) {
 
 func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 	identity := auditTestCloudIdentity()
-	wrapped, err := NewIdentity(identity)
+	wrapped, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	record := preparedAuditRecord{
 		record: audit.OwnershipRecord{
@@ -249,9 +252,9 @@ func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 
 func TestClassifyAuditFloatingIPDoesNotExposeDescription(t *testing.T) {
 	identity := auditTestCloudIdentity()
-	wrapped, err := NewIdentity(identity)
+	wrapped, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	description := wrapped.GatewayDescription(roleFloatingIP)
 	candidate := auditCandidate{
@@ -270,9 +273,9 @@ func TestClassifyAuditFloatingIPDoesNotExposeDescription(t *testing.T) {
 
 func TestClassifyAuditFloatingIPRejectsSharedVIPPort(t *testing.T) {
 	identity := auditTestCloudIdentity()
-	wrapped, err := NewIdentity(identity)
+	wrapped, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	candidate := auditCandidate{
 		service: auditServiceNeutron, resourceType: auditTypeFloatingIP,
@@ -319,9 +322,9 @@ func auditFindingByID(t *testing.T, findings []audit.ResourceFinding, id string)
 
 func auditTestLoadBalancerCandidate(t *testing.T, identity cloud.Identity, id string) auditCandidate {
 	t.Helper()
-	wrapped, err := NewIdentity(identity)
+	wrapped, err := openstackidentity.NewIdentity(identity)
 	if err != nil {
-		t.Fatalf("NewIdentity() error = %v", err)
+		t.Fatalf("openstackidentity.NewIdentity() error = %v", err)
 	}
 	tags, err := wrapped.GatewayTags(roleLoadBalancer)
 	if err != nil {
@@ -346,11 +349,7 @@ func auditTestCloudIdentity() cloud.Identity {
 }
 
 func auditTestScopeTags(identity cloud.Identity) []string {
-	return []string{
-		identityPrefix + "managed=true",
-		tag("cluster", identity.ClusterID),
-		tag("controller", identity.Controller),
-	}
+	return openstackidentity.ScopeTags(identity.ClusterID, identity.Controller)
 }
 
 func removeAuditTag(tags []string, key string) []string {
@@ -370,11 +369,11 @@ func replaceAuditTag(tags []string, key, encodedValue string) []string {
 	for index, value := range result {
 		actualKey, _, ok := parseIdentityTag(value)
 		if ok && actualKey == key {
-			result[index] = identityPrefix + key + "=" + encodedValue
+			result[index] = testIdentityPrefix + key + "=" + encodedValue
 			return result
 		}
 	}
-	return append(result, identityPrefix+key+"="+encodedValue)
+	return append(result, testIdentityPrefix+key+"="+encodedValue)
 }
 
 func stringsContainAny(value string, candidates ...string) bool {

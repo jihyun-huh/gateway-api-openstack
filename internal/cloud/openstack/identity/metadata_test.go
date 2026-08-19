@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package identity
 
 import (
 	"reflect"
@@ -38,11 +38,11 @@ func TestIdentityMatchesProjectButNotControllerVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tags, err := identity.GatewayTags(roleLoadBalancer)
+	tags, err := identity.GatewayTags(RoleLoadBalancer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !identity.MatchesGateway(tags, roleLoadBalancer) {
+	if !identity.MatchesGateway(tags, RoleLoadBalancer) {
 		t.Fatal("identity did not match its complete resource tags")
 	}
 
@@ -52,7 +52,7 @@ func TestIdentityMatchesProjectButNotControllerVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !upgraded.MatchesGateway(tags, roleLoadBalancer) {
+	if !upgraded.MatchesGateway(tags, RoleLoadBalancer) {
 		t.Fatal("controller upgrade changed immutable resource ownership")
 	}
 	otherProjectValue := value
@@ -61,14 +61,14 @@ func TestIdentityMatchesProjectButNotControllerVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if otherProject.MatchesGateway(tags, roleLoadBalancer) {
+	if otherProject.MatchesGateway(tags, RoleLoadBalancer) {
 		t.Fatal("identity accepted resource tags from another OpenStack project")
 	}
-	discovery, err := identity.GatewayDiscoveryTags(roleLoadBalancer)
+	discovery, err := identity.GatewayDiscoveryTags(RoleLoadBalancer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherProjectDiscovery, err := otherProject.GatewayDiscoveryTags(roleLoadBalancer)
+	otherProjectDiscovery, err := otherProject.GatewayDiscoveryTags(RoleLoadBalancer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestIdentityHashesLongTagValuesAndRejectsConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tags, err := identity.GatewayTags(roleLoadBalancer)
+	tags, err := identity.GatewayTags(RoleLoadBalancer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,15 +100,15 @@ func TestIdentityHashesLongTagValuesAndRejectsConflicts(t *testing.T) {
 			t.Fatalf("identity tag length = %d, want at most %d: %q", len(tag), maxTagLength, tag)
 		}
 	}
-	if !identity.MatchesGateway(tags, roleLoadBalancer) {
+	if !identity.MatchesGateway(tags, RoleLoadBalancer) {
 		t.Fatal("identity did not match tags containing hashed values")
 	}
 	conflicting := append([]string(nil), tags...)
 	conflicting = append(conflicting, tag("uid", "another-gateway-uid"))
-	if identity.MatchesGateway(conflicting, roleLoadBalancer) {
+	if identity.MatchesGateway(conflicting, RoleLoadBalancer) {
 		t.Fatal("identity accepted conflicting values for a reserved identity tag")
 	}
-	if got := len(identity.Description(roleFloatingIP)); got > maxTagLength {
+	if got := len(identity.Description(RoleFloatingIP)); got > maxTagLength {
 		t.Fatalf("description length = %d, want at most %d", got, maxTagLength)
 	}
 }
@@ -134,31 +134,8 @@ func TestGatewayDescriptionIgnoresRouteFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	description := gatewayIdentity.GatewayDescription(roleFloatingIP)
-	if !routeIdentity.MatchesGatewayDescription(description, roleFloatingIP) {
+	description := gatewayIdentity.GatewayDescription(RoleFloatingIP)
+	if !routeIdentity.MatchesGatewayDescription(description, RoleFloatingIP) {
 		t.Fatal("route-scoped identity did not recognize its Gateway-scoped Floating IP description")
-	}
-}
-
-func TestProviderIdentityRequiresAuthenticatedProject(t *testing.T) {
-	value := cloud.Identity{
-		OpenStackProjectID: "project-a",
-		ClusterID:          "cluster-a",
-		Controller:         "example.com/openstack",
-		GatewayNamespace:   "default",
-		GatewayName:        "edge",
-		GatewayUID:         "gateway-uid",
-	}
-	provider := NewProvider(ServiceClients{ProjectID: "project-a"}, ProviderConfig{})
-	if _, err := provider.identity(value); err != nil {
-		t.Fatalf("identity() error = %v", err)
-	}
-	value.OpenStackProjectID = "project-b"
-	if _, err := provider.identity(value); err == nil {
-		t.Fatal("identity() accepted a different project")
-	}
-	value.OpenStackProjectID = ""
-	if _, err := provider.identity(value); err == nil {
-		t.Fatal("identity() accepted an empty project")
 	}
 }

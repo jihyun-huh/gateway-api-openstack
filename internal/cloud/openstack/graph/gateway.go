@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -125,7 +125,7 @@ func (p *Provider) ensureNoFloatingIP(ctx context.Context, identity Identity, vi
 	if len(items) == 0 {
 		return cloud.ReadyOutcome(), nil
 	}
-	if err := floatingips.Delete(ctx, p.clients.Network, items[0].ID).ExtractErr(); err != nil && !isNotFound(err) {
+	if err := p.neutron.DeleteFloatingIP(ctx, items[0].ID); err != nil && !isNotFound(err) {
 		return cloud.Outcome{}, fmt.Errorf("delete no-longer-configured Floating IP %s: %w", items[0].ID, err)
 	}
 	return p.progressingOutcome("Removed a no-longer-configured Floating IP"), nil
@@ -227,13 +227,9 @@ func (p *Provider) ensureLoadBalancer(
 	if err != nil {
 		return nil, cloud.Outcome{}, err
 	}
-	pages, err := loadbalancers.List(p.clients.LoadBalancer, loadbalancers.ListOpts{ProjectID: p.clients.ProjectID, Tags: discoveryTags}).AllPages(ctx)
+	items, err := p.octavia.ListLoadBalancers(ctx, loadbalancers.ListOpts{ProjectID: p.projectID, Tags: discoveryTags})
 	if err != nil {
 		return nil, cloud.Outcome{}, fmt.Errorf("list managed load balancers: %w", err)
-	}
-	items, err := loadbalancers.ExtractLoadBalancers(pages)
-	if err != nil {
-		return nil, cloud.Outcome{}, fmt.Errorf("extract managed load balancers: %w", err)
 	}
 	if len(items) > 1 {
 		return nil, cloud.Outcome{}, fmt.Errorf("%w: found %d load balancers for one Gateway", cloud.ErrOwnershipConflict, len(items))
@@ -271,14 +267,14 @@ func (p *Provider) ensureLoadBalancer(
 		}
 	}
 
-	created, err := loadbalancers.Create(ctx, p.clients.LoadBalancer, loadbalancers.CreateOpts{
+	created, err := p.octavia.CreateLoadBalancer(ctx, loadbalancers.CreateOpts{
 		Name:         resourceName(spec.Identity, roleLoadBalancer),
 		Description:  identity.Description(roleLoadBalancer),
 		VipSubnetID:  spec.VIPSubnetID,
 		Provider:     spec.Provider,
 		AdminStateUp: boolPointer(true),
 		Tags:         tags,
-	}).Extract()
+	})
 	if err != nil {
 		return nil, cloud.Outcome{}, fmt.Errorf("create load balancer: %w", classifyOctaviaMutationError(err))
 	}
@@ -313,7 +309,7 @@ func (p *Provider) ensureListener(
 	if err != nil {
 		return nil, cloud.Outcome{}, err
 	}
-	createdListener, err := listeners.Create(ctx, p.clients.LoadBalancer, listeners.CreateOpts{
+	createdListener, err := p.octavia.CreateListener(ctx, listeners.CreateOpts{
 		LoadbalancerID: loadBalancerID,
 		Protocol:       listeners.ProtocolHTTP,
 		ProtocolPort:   spec.ListenerPort,
@@ -321,7 +317,7 @@ func (p *Provider) ensureListener(
 		Description:    identity.Description(roleListener),
 		AdminStateUp:   boolPointer(true),
 		Tags:           tags,
-	}).Extract()
+	})
 	if err != nil {
 		return nil, cloud.Outcome{}, fmt.Errorf("create listener: %w", classifyOctaviaMutationError(err))
 	}
@@ -349,16 +345,12 @@ func (p *Provider) findManagedGatewayListener(
 	identity Identity,
 	loadBalancerID string,
 ) (*listeners.Listener, error) {
-	pages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{
+	listenerList, err := p.octavia.ListListeners(ctx, listeners.ListOpts{
 		LoadbalancerID: loadBalancerID,
-		ProjectID:      p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID:      p.projectID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list Gateway listeners: %w", err)
-	}
-	listenerList, err := listeners.ExtractListeners(pages)
-	if err != nil {
-		return nil, fmt.Errorf("extract Gateway listeners: %w", err)
 	}
 	var owned *listeners.Listener
 	for index := range listenerList {
@@ -406,11 +398,11 @@ func (p *Provider) ensureFloatingIP(
 	if owned != nil {
 		return owned, cloud.ReadyOutcome(), nil
 	}
-	created, err := floatingips.Create(ctx, p.clients.Network, floatingips.CreateOpts{
+	created, err := p.neutron.CreateFloatingIP(ctx, floatingips.CreateOpts{
 		Description:       identity.GatewayDescription(roleFloatingIP),
 		FloatingNetworkID: networkID,
 		PortID:            vipPortID,
-	}).Extract()
+	})
 	if err != nil {
 		return nil, cloud.Outcome{}, fmt.Errorf("create Floating IP: %w", err)
 	}
@@ -425,13 +417,9 @@ func (p *Provider) listGatewayFloatingIPs(
 	identity Identity,
 	vipPortID string,
 ) ([]floatingips.FloatingIP, error) {
-	pages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{PortID: vipPortID}).AllPages(ctx)
+	items, err := p.neutron.ListFloatingIPs(ctx, floatingips.ListOpts{PortID: vipPortID})
 	if err != nil {
 		return nil, fmt.Errorf("list Floating IPs on VIP port: %w", err)
-	}
-	items, err := floatingips.ExtractFloatingIPs(pages)
-	if err != nil {
-		return nil, fmt.Errorf("extract Floating IPs: %w", err)
 	}
 	for _, item := range items {
 		if err := p.validateFloatingIPProject(item.ID, item.ProjectID, item.TenantID); err != nil {
@@ -481,18 +469,18 @@ func (p *Provider) gatewayFloatingIPReadyForTraffic(
 }
 
 func (p *Provider) enableLoadBalancer(ctx context.Context, loadBalancerID string) error {
-	if _, err := loadbalancers.Update(ctx, p.clients.LoadBalancer, loadBalancerID, loadbalancers.UpdateOpts{
+	if _, err := p.octavia.UpdateLoadBalancer(ctx, loadBalancerID, loadbalancers.UpdateOpts{
 		AdminStateUp: boolPointer(true),
-	}).Extract(); err != nil {
+	}); err != nil {
 		return fmt.Errorf("enable load balancer: %w", classifyOctaviaMutationError(err))
 	}
 	return nil
 }
 
 func (p *Provider) enableListener(ctx context.Context, listenerID string) error {
-	if _, err := listeners.Update(ctx, p.clients.LoadBalancer, listenerID, listeners.UpdateOpts{
+	if _, err := p.octavia.UpdateListener(ctx, listenerID, listeners.UpdateOpts{
 		AdminStateUp: boolPointer(true),
-	}).Extract(); err != nil {
+	}); err != nil {
 		return fmt.Errorf("enable listener: %w", classifyOctaviaMutationError(err))
 	}
 	return nil

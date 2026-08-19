@@ -20,97 +20,68 @@ package openstack
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"time"
 
+	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/graph"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/inventory"
 )
 
-const (
-	roleLoadBalancer = "loadbalancer"
-	roleListener     = "listener"
-	roleFloatingIP   = "floating-ip"
-	rolePool         = "pool"
-	roleMember       = "member"
-	roleMonitor      = "health-monitor"
-	rolePolicyExact  = "l7-policy-exact"
-	rolePolicyPrefix = "l7-policy-prefix"
-	roleRulePath     = "l7-rule-path"
-	roleRuleHost     = "l7-rule-host"
-)
+// ProviderConfig bounds one provider call and controls how soon the
+// controller observes an asynchronous Octavia operation again.
+type ProviderConfig = graph.ProviderConfig
 
-// ProviderConfig bounds one provider call and controls how soon the controller
-// observes an asynchronous Octavia operation again.
-type ProviderConfig struct {
-	OperationTimeout time.Duration
-	PollInterval     time.Duration
-}
-
-// Provider owns the OpenStack resource graph for managed Gateway API objects.
+// Provider is the stable OpenStack facade used by the controller and the
+// read-only ownership audit command.
 type Provider struct {
-	clients          ServiceClients
-	operationTimeout time.Duration
-	pollInterval     time.Duration
+	graph     *graph.Provider
+	inventory *inventory.Scanner
 }
 
 // NewProvider creates an OpenStack provider. The clients are expected to have
 // an Octavia microversion that supports tags (2.5 or later).
 func NewProvider(clients ServiceClients, cfg ProviderConfig) *Provider {
-	if cfg.OperationTimeout <= 0 {
-		cfg.OperationTimeout = 10 * time.Minute
-	}
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 2 * time.Second
-	}
 	return &Provider{
-		clients:          clients,
-		operationTimeout: cfg.OperationTimeout,
-		pollInterval:     cfg.PollInterval,
+		graph:     graph.NewProvider(clients, cfg),
+		inventory: inventory.NewScanner(clients, cfg.OperationTimeout),
 	}
 }
 
-var _ cloud.Provider = (*Provider)(nil)
+var (
+	_ cloud.Provider = (*Provider)(nil)
+	_ audit.Scanner  = (*Provider)(nil)
+)
 
-func (p *Provider) identity(resourceIdentity cloud.Identity) (Identity, error) {
-	if strings.TrimSpace(p.clients.ProjectID) == "" {
-		return Identity{}, fmt.Errorf("authenticated OpenStack project ID is missing from service clients")
-	}
-	if strings.TrimSpace(resourceIdentity.OpenStackProjectID) == "" {
-		return Identity{}, fmt.Errorf("controller resource identity must include an OpenStack project ID")
-	}
-	if resourceIdentity.OpenStackProjectID != p.clients.ProjectID {
-		return Identity{}, fmt.Errorf("%w: identity project %s does not match authenticated project %s", cloud.ErrOwnershipConflict, resourceIdentity.OpenStackProjectID, p.clients.ProjectID)
-	}
-	return NewIdentity(resourceIdentity)
+// EnsureGateway delegates Gateway graph reconciliation to the graph package.
+func (p *Provider) EnsureGateway(ctx context.Context, spec cloud.GatewaySpec) (cloud.GatewayResult, error) {
+	return p.graph.EnsureGateway(ctx, spec)
 }
 
-func (p *Provider) validateLoadBalancerProject(id, projectID string) error {
-	if projectID != p.clients.ProjectID {
-		return fmt.Errorf("%w: load balancer %s belongs to project %s, not authenticated project %s", cloud.ErrOwnershipConflict, id, projectID, p.clients.ProjectID)
-	}
-	return nil
+// GetGateway delegates read-only Gateway discovery to the graph package.
+func (p *Provider) GetGateway(ctx context.Context, identity cloud.Identity) (cloud.GatewayResult, bool, error) {
+	return p.graph.GetGateway(ctx, identity)
 }
 
-func (p *Provider) validateFloatingIPProject(id, projectID, tenantID string) error {
-	if projectID == "" {
-		projectID = tenantID
-	}
-	if projectID != p.clients.ProjectID {
-		return fmt.Errorf("%w: Floating IP %s belongs to project %s, not authenticated project %s", cloud.ErrOwnershipConflict, id, projectID, p.clients.ProjectID)
-	}
-	return nil
+// DeleteGateway delegates whole-Gateway cleanup to the graph package.
+func (p *Provider) DeleteGateway(ctx context.Context, identity cloud.Identity) (cloud.Outcome, error) {
+	return p.graph.DeleteGateway(ctx, identity)
 }
 
-func (p *Provider) validateOptionalProject(resource, id, projectID string) error {
-	if projectID != "" && projectID != p.clients.ProjectID {
-		return fmt.Errorf("%w: %s %s belongs to project %s, not authenticated project %s", cloud.ErrOwnershipConflict, resource, id, projectID, p.clients.ProjectID)
-	}
-	return nil
+// EnsureRoute delegates HTTPRoute graph reconciliation to the graph package.
+func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (cloud.RouteResult, error) {
+	return p.graph.EnsureRoute(ctx, spec)
 }
 
-func (p *Provider) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, p.operationTimeout)
+// DeleteRoute delegates exact HTTPRoute graph cleanup to the graph package.
+func (p *Provider) DeleteRoute(ctx context.Context, identity cloud.Identity) (cloud.Outcome, error) {
+	return p.graph.DeleteRoute(ctx, identity)
 }
 
-func boolPointer(value bool) *bool { return &value }
+// Scan delegates the read-only ownership inventory to the inventory package.
+func (p *Provider) Scan(
+	ctx context.Context,
+	scope audit.Scope,
+	records []audit.OwnershipRecord,
+) (audit.Inventory, error) {
+	return p.inventory.Scan(ctx, scope, records)
+}

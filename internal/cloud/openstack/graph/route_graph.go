@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -148,16 +148,12 @@ func (p *Provider) observeRouteGraph(
 	gateway cloud.GatewayState,
 ) (observedRouteGraph, error) {
 	graph := observedRouteGraph{}
-	poolPages, err := pools.List(p.clients.LoadBalancer, pools.ListOpts{
+	poolItems, err := p.octavia.ListPools(ctx, pools.ListOpts{
 		LoadbalancerID: gateway.LoadBalancerID,
-		ProjectID:      p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID:      p.projectID,
+	})
 	if err != nil {
 		return graph, fmt.Errorf("list pools beneath route Gateway: %w", err)
-	}
-	poolItems, err := pools.ExtractPools(poolPages)
-	if err != nil {
-		return graph, fmt.Errorf("extract pools beneath route Gateway: %w", err)
 	}
 	sort.Slice(poolItems, func(i, j int) bool { return poolItems[i].ID < poolItems[j].ID })
 	for index := range poolItems {
@@ -194,15 +190,12 @@ func (p *Provider) observeRouteGraph(
 }
 
 func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identity, graph *observedRouteGraph) error {
-	memberPages, err := pools.ListMembers(p.clients.LoadBalancer, graph.pool.ID, pools.ListMembersOpts{
-		ProjectID: p.clients.ProjectID,
-	}).AllPages(ctx)
+	var err error
+	graph.members, err = p.octavia.ListMembers(ctx, graph.pool.ID, pools.ListMembersOpts{
+		ProjectID: p.projectID,
+	})
 	if err != nil {
 		return fmt.Errorf("list route pool members: %w", err)
-	}
-	graph.members, err = pools.ExtractMembers(memberPages)
-	if err != nil {
-		return fmt.Errorf("extract route pool members: %w", err)
 	}
 	sort.Slice(graph.members, func(i, j int) bool {
 		if graph.members[i].Address == graph.members[j].Address {
@@ -237,16 +230,12 @@ func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identi
 		memberKeys[key] = member.ID
 	}
 
-	monitorPages, err := monitors.List(p.clients.LoadBalancer, monitors.ListOpts{
+	monitorItems, err := p.octavia.ListMonitors(ctx, monitors.ListOpts{
 		PoolID:    graph.pool.ID,
-		ProjectID: p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID: p.projectID,
+	})
 	if err != nil {
 		return fmt.Errorf("list route health monitors: %w", err)
-	}
-	monitorItems, err := monitors.ExtractMonitors(monitorPages)
-	if err != nil {
-		return fmt.Errorf("extract route health monitors: %w", err)
 	}
 	sort.Slice(monitorItems, func(i, j int) bool { return monitorItems[i].ID < monitorItems[j].ID })
 	for index := range monitorItems {
@@ -271,16 +260,12 @@ func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identi
 }
 
 func (p *Provider) observeRoutePolicies(ctx context.Context, identity Identity, listenerID string) ([]observedRoutePolicy, error) {
-	pages, err := l7policies.List(p.clients.LoadBalancer, l7policies.ListOpts{
+	items, err := p.octavia.ListPolicies(ctx, l7policies.ListOpts{
 		ListenerID: listenerID,
-		ProjectID:  p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID:  p.projectID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list route L7 policies: %w", err)
-	}
-	items, err := l7policies.ExtractL7Policies(pages)
-	if err != nil {
-		return nil, fmt.Errorf("extract route L7 policies: %w", err)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Position == items[j].Position {
@@ -306,15 +291,11 @@ func (p *Provider) observeRoutePolicies(ctx context.Context, identity Identity, 
 			return nil, fmt.Errorf("%w: L7 policy %s reports listener %s instead of %s", cloud.ErrOwnershipConflict, item.ID, item.ListenerID, listenerID)
 		}
 
-		rulePages, err := l7policies.ListRules(p.clients.LoadBalancer, item.ID, l7policies.ListRulesOpts{
-			ProjectID: p.clients.ProjectID,
-		}).AllPages(ctx)
+		ruleItems, err := p.octavia.ListRules(ctx, item.ID, l7policies.ListRulesOpts{
+			ProjectID: p.projectID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("list rules beneath L7 policy %s: %w", item.ID, err)
-		}
-		ruleItems, err := l7policies.ExtractRules(rulePages)
-		if err != nil {
-			return nil, fmt.Errorf("extract rules beneath L7 policy %s: %w", item.ID, err)
 		}
 		sort.Slice(ruleItems, func(i, j int) bool { return ruleItems[i].ID < ruleItems[j].ID })
 		observedRules := make([]observedRouteRule, 0, len(ruleItems))
@@ -634,7 +615,7 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 		if tagErr != nil {
 			return tagErr
 		}
-		_, err = pools.Create(ctx, p.clients.LoadBalancer, pools.CreateOpts{
+		_, err = p.octavia.CreatePool(ctx, pools.CreateOpts{
 			LBMethod:       pools.LBMethodRoundRobin,
 			Protocol:       pools.ProtocolHTTP,
 			LoadbalancerID: desired.spec.Gateway.LoadBalancerID,
@@ -642,37 +623,37 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			Description:    desired.identity.Description(rolePool),
 			AdminStateUp:   boolPointer(true),
 			Tags:           tags,
-		}).Extract()
+		})
 	case routeMutationUpdatePool:
-		_, err = pools.Update(ctx, p.clients.LoadBalancer, step.id, pools.UpdateOpts{
+		_, err = p.octavia.UpdatePool(ctx, step.id, pools.UpdateOpts{
 			LBMethod:     pools.LBMethodRoundRobin,
 			AdminStateUp: boolPointer(true),
-		}).Extract()
+		})
 	case routeMutationDeleteMember:
-		err = pools.DeleteMember(ctx, p.clients.LoadBalancer, step.parentID, step.id).ExtractErr()
+		err = p.octavia.DeleteMember(ctx, step.parentID, step.id)
 	case routeMutationCreateMember:
 		tags, tagErr := desired.identity.RouteTags(roleMember)
 		if tagErr != nil {
 			return tagErr
 		}
-		_, err = pools.CreateMember(ctx, p.clients.LoadBalancer, step.parentID, pools.CreateMemberOpts{
+		_, err = p.octavia.CreateMember(ctx, step.parentID, pools.CreateMemberOpts{
 			Address:      step.member.Address,
 			ProtocolPort: step.member.Port,
 			Name:         resourceName(desired.spec.Identity, roleMember),
 			SubnetID:     desired.spec.MemberSubnetID,
 			AdminStateUp: boolPointer(true),
 			Tags:         tags,
-		}).Extract()
+		})
 	case routeMutationUpdateMember:
-		_, err = pools.UpdateMember(ctx, p.clients.LoadBalancer, step.parentID, step.id, pools.UpdateMemberOpts{
+		_, err = p.octavia.UpdateMember(ctx, step.parentID, step.id, pools.UpdateMemberOpts{
 			AdminStateUp: boolPointer(true),
-		}).Extract()
+		})
 	case routeMutationCreateMonitor:
 		tags, tagErr := desired.identity.RouteTags(roleMonitor)
 		if tagErr != nil {
 			return tagErr
 		}
-		_, err = monitors.Create(ctx, p.clients.LoadBalancer, monitors.CreateOpts{
+		_, err = p.octavia.CreateMonitor(ctx, monitors.CreateOpts{
 			PoolID:         step.parentID,
 			Type:           monitors.TypeHTTP,
 			Delay:          routeMonitorDelay,
@@ -685,9 +666,9 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			Name:           resourceName(desired.spec.Identity, roleMonitor),
 			AdminStateUp:   boolPointer(true),
 			Tags:           tags,
-		}).Extract()
+		})
 	case routeMutationUpdateMonitor:
-		_, err = monitors.Update(ctx, p.clients.LoadBalancer, step.id, monitors.UpdateOpts{
+		_, err = p.octavia.UpdateMonitor(ctx, step.id, monitors.UpdateOpts{
 			Delay:          routeMonitorDelay,
 			Timeout:        routeMonitorTimeout,
 			MaxRetries:     routeMonitorMaxRetries,
@@ -696,21 +677,21 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			HTTPMethod:     http.MethodGet,
 			ExpectedCodes:  routeMonitorExpectedCodes,
 			AdminStateUp:   boolPointer(true),
-		}).Extract()
+		})
 	case routeMutationDisablePolicy:
-		_, err = l7policies.Update(ctx, p.clients.LoadBalancer, step.id, l7policies.UpdateOpts{
+		_, err = p.octavia.UpdatePolicy(ctx, step.id, l7policies.UpdateOpts{
 			AdminStateUp: boolPointer(false),
-		}).Extract()
+		})
 	case routeMutationDeleteRule:
-		err = l7policies.DeleteRule(ctx, p.clients.LoadBalancer, step.parentID, step.id).ExtractErr()
+		err = p.octavia.DeleteRule(ctx, step.parentID, step.id)
 	case routeMutationDeletePolicy:
-		err = l7policies.Delete(ctx, p.clients.LoadBalancer, step.id).ExtractErr()
+		err = p.octavia.DeletePolicy(ctx, step.id)
 	case routeMutationCreatePolicy:
 		tags, tagErr := desired.identity.RouteTags(step.policy.role)
 		if tagErr != nil {
 			return tagErr
 		}
-		_, err = l7policies.Create(ctx, p.clients.LoadBalancer, l7policies.CreateOpts{
+		_, err = p.octavia.CreatePolicy(ctx, l7policies.CreateOpts{
 			Name:           resourceName(desired.spec.Identity, step.policy.role),
 			ListenerID:     desired.spec.Gateway.ListenerID,
 			Action:         l7policies.ActionRedirectToPool,
@@ -719,42 +700,42 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			RedirectPoolID: step.parentID,
 			AdminStateUp:   boolPointer(false),
 			Tags:           tags,
-		}).Extract()
+		})
 	case routeMutationUpdatePolicy:
-		_, err = l7policies.Update(ctx, p.clients.LoadBalancer, step.id, l7policies.UpdateOpts{
+		_, err = p.octavia.UpdatePolicy(ctx, step.id, l7policies.UpdateOpts{
 			Action:         l7policies.ActionRedirectToPool,
 			Position:       step.policy.position,
 			RedirectPoolID: &step.parentID,
 			AdminStateUp:   boolPointer(false),
-		}).Extract()
+		})
 	case routeMutationCreateRule:
 		tags, tagErr := desired.identity.RouteTags(step.rule.role)
 		if tagErr != nil {
 			return tagErr
 		}
-		_, err = l7policies.CreateRule(ctx, p.clients.LoadBalancer, step.parentID, l7policies.CreateRuleOpts{
+		_, err = p.octavia.CreateRule(ctx, step.parentID, l7policies.CreateRuleOpts{
 			RuleType:     step.rule.ruleType,
 			CompareType:  step.rule.compareType,
 			Value:        step.rule.value,
 			AdminStateUp: boolPointer(true),
 			Tags:         tags,
-		}).Extract()
+		})
 	case routeMutationUpdateRule:
-		_, err = l7policies.UpdateRule(ctx, p.clients.LoadBalancer, step.parentID, step.id, l7policies.UpdateRuleOpts{
+		_, err = p.octavia.UpdateRule(ctx, step.parentID, step.id, l7policies.UpdateRuleOpts{
 			RuleType:     step.rule.ruleType,
 			CompareType:  step.rule.compareType,
 			Value:        step.rule.value,
 			Invert:       boolPointer(false),
 			AdminStateUp: boolPointer(true),
-		}).Extract()
+		})
 	case routeMutationEnablePolicy:
-		_, err = l7policies.Update(ctx, p.clients.LoadBalancer, step.id, l7policies.UpdateOpts{
+		_, err = p.octavia.UpdatePolicy(ctx, step.id, l7policies.UpdateOpts{
 			AdminStateUp: boolPointer(true),
-		}).Extract()
+		})
 	case routeMutationDeleteMonitor:
-		err = monitors.Delete(ctx, p.clients.LoadBalancer, step.id).ExtractErr()
+		err = p.octavia.DeleteMonitor(ctx, step.id)
 	case routeMutationDeletePool:
-		err = pools.Delete(ctx, p.clients.LoadBalancer, step.id).ExtractErr()
+		err = p.octavia.DeletePool(ctx, step.id)
 	default:
 		return fmt.Errorf("unsupported route mutation %d", step.kind)
 	}

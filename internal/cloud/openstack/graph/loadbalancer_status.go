@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -40,7 +40,7 @@ type loadBalancerObservation struct {
 }
 
 func (p *Provider) observeLoadBalancerOnce(ctx context.Context, loadBalancerID string) (loadBalancerObservation, error) {
-	loadBalancer, err := loadbalancers.Get(ctx, p.clients.LoadBalancer, loadBalancerID).Extract()
+	loadBalancer, err := p.octavia.GetLoadBalancer(ctx, loadBalancerID)
 	if isNotFound(err) {
 		return loadBalancerObservation{phase: loadBalancerPhaseAbsent}, nil
 	}

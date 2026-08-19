@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -134,16 +134,12 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 	if err != nil {
 		return cloud.Outcome{}, err
 	}
-	floatingIPPages, err := floatingips.List(p.clients.Network, floatingips.ListOpts{
+	floatingIPs, err := p.neutron.ListFloatingIPs(ctx, floatingips.ListOpts{
 		PortID:    managedLoadBalancer.VipPortID,
-		ProjectID: p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID: p.projectID,
+	})
 	if err != nil {
 		return cloud.Outcome{}, fmt.Errorf("list Floating IPs before Gateway deletion: %w", err)
-	}
-	floatingIPs, err := floatingips.ExtractFloatingIPs(floatingIPPages)
-	if err != nil {
-		return cloud.Outcome{}, fmt.Errorf("extract Floating IPs before Gateway deletion: %w", err)
 	}
 	for _, floatingIP := range floatingIPs {
 		if err := p.validateFloatingIPProject(floatingIP.ID, floatingIP.ProjectID, floatingIP.TenantID); err != nil {
@@ -162,12 +158,12 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 	}
 	if len(floatingIPs) != 0 {
 		sort.Slice(floatingIPs, func(i, j int) bool { return floatingIPs[i].ID < floatingIPs[j].ID })
-		if err := floatingips.Delete(ctx, p.clients.Network, floatingIPs[0].ID).ExtractErr(); err != nil && !isNotFound(err) {
+		if err := p.neutron.DeleteFloatingIP(ctx, floatingIPs[0].ID); err != nil && !isNotFound(err) {
 			return cloud.Outcome{}, fmt.Errorf("delete Floating IP %s: %w", floatingIPs[0].ID, err)
 		}
 		return p.progressingOutcome("Deleting controller-owned Floating IP"), nil
 	}
-	if err := loadbalancers.Delete(ctx, p.clients.LoadBalancer, managedLoadBalancer.ID, nil).ExtractErr(); err != nil && !isNotFound(err) {
+	if err := p.octavia.DeleteLoadBalancer(ctx, managedLoadBalancer.ID); err != nil && !isNotFound(err) {
 		return cloud.Outcome{}, fmt.Errorf("delete load balancer %s without cascade: %w", managedLoadBalancer.ID, classifyOctaviaMutationError(err))
 	}
 	return p.progressingOutcome("Deleting Octavia load balancer"), nil
@@ -213,16 +209,12 @@ func (p gatewayDeletionPlan) hasRouteResources() bool {
 func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identity, loadBalancerID string) (gatewayDeletionPlan, error) {
 	plan := gatewayDeletionPlan{}
 	listenerSteps := gatewayDeletionPlan{}
-	listenerPages, err := listeners.List(p.clients.LoadBalancer, listeners.ListOpts{
+	listenerList, err := p.octavia.ListListeners(ctx, listeners.ListOpts{
 		LoadbalancerID: loadBalancerID,
-		ProjectID:      p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID:      p.projectID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list listeners before Gateway deletion: %w", err)
-	}
-	listenerList, err := listeners.ExtractListeners(listenerPages)
-	if err != nil {
-		return nil, fmt.Errorf("extract listeners before Gateway deletion: %w", err)
 	}
 	sort.Slice(listenerList, func(i, j int) bool { return listenerList[i].ID < listenerList[j].ID })
 	for _, listener := range listenerList {
@@ -237,16 +229,12 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 				return nil, fmt.Errorf("%w: listener %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, listener.ID, parent.ID, loadBalancerID)
 			}
 		}
-		policyPages, err := l7policies.List(p.clients.LoadBalancer, l7policies.ListOpts{
+		policyList, err := p.octavia.ListPolicies(ctx, l7policies.ListOpts{
 			ListenerID: listener.ID,
-			ProjectID:  p.clients.ProjectID,
-		}).AllPages(ctx)
+			ProjectID:  p.projectID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("list L7 policies beneath listener %s before Gateway deletion: %w", listener.ID, err)
-		}
-		policyList, err := l7policies.ExtractL7Policies(policyPages)
-		if err != nil {
-			return nil, fmt.Errorf("extract L7 policies beneath listener %s before Gateway deletion: %w", listener.ID, err)
 		}
 		sort.Slice(policyList, func(i, j int) bool {
 			if policyList[i].Position == policyList[j].Position {
@@ -264,15 +252,11 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 			if policy.ListenerID != "" && policy.ListenerID != listener.ID {
 				return nil, fmt.Errorf("%w: L7 policy %s reports listener %s instead of %s", cloud.ErrOwnershipConflict, policy.ID, policy.ListenerID, listener.ID)
 			}
-			rulePages, err := l7policies.ListRules(p.clients.LoadBalancer, policy.ID, l7policies.ListRulesOpts{
-				ProjectID: p.clients.ProjectID,
-			}).AllPages(ctx)
+			ruleList, err := p.octavia.ListRules(ctx, policy.ID, l7policies.ListRulesOpts{
+				ProjectID: p.projectID,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("list L7 rules beneath policy %s before Gateway deletion: %w", policy.ID, err)
-			}
-			ruleList, err := l7policies.ExtractRules(rulePages)
-			if err != nil {
-				return nil, fmt.Errorf("extract L7 rules beneath policy %s before Gateway deletion: %w", policy.ID, err)
 			}
 			sort.Slice(ruleList, func(i, j int) bool { return ruleList[i].ID < ruleList[j].ID })
 			for _, rule := range ruleList {
@@ -299,16 +283,12 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 		})
 	}
 
-	poolPages, err := pools.List(p.clients.LoadBalancer, pools.ListOpts{
+	poolList, err := p.octavia.ListPools(ctx, pools.ListOpts{
 		LoadbalancerID: loadBalancerID,
-		ProjectID:      p.clients.ProjectID,
-	}).AllPages(ctx)
+		ProjectID:      p.projectID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list pools before Gateway deletion: %w", err)
-	}
-	poolList, err := pools.ExtractPools(poolPages)
-	if err != nil {
-		return nil, fmt.Errorf("extract pools before Gateway deletion: %w", err)
 	}
 	sort.Slice(poolList, func(i, j int) bool { return poolList[i].ID < poolList[j].ID })
 	for _, pool := range poolList {
@@ -323,16 +303,12 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 				return nil, fmt.Errorf("%w: pool %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, pool.ID, parent.ID, loadBalancerID)
 			}
 		}
-		monitorPages, err := monitors.List(p.clients.LoadBalancer, monitors.ListOpts{
+		monitorList, err := p.octavia.ListMonitors(ctx, monitors.ListOpts{
 			PoolID:    pool.ID,
-			ProjectID: p.clients.ProjectID,
-		}).AllPages(ctx)
+			ProjectID: p.projectID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("list health monitors beneath pool %s before Gateway deletion: %w", pool.ID, err)
-		}
-		monitorList, err := monitors.ExtractMonitors(monitorPages)
-		if err != nil {
-			return nil, fmt.Errorf("extract health monitors beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
 		sort.Slice(monitorList, func(i, j int) bool { return monitorList[i].ID < monitorList[j].ID })
 		for _, monitor := range monitorList {
@@ -353,15 +329,11 @@ func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identi
 				parentID:   pool.ID,
 			})
 		}
-		memberPages, err := pools.ListMembers(p.clients.LoadBalancer, pool.ID, pools.ListMembersOpts{
-			ProjectID: p.clients.ProjectID,
-		}).AllPages(ctx)
+		memberList, err := p.octavia.ListMembers(ctx, pool.ID, pools.ListMembersOpts{
+			ProjectID: p.projectID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("list members beneath pool %s before Gateway deletion: %w", pool.ID, err)
-		}
-		memberList, err := pools.ExtractMembers(memberPages)
-		if err != nil {
-			return nil, fmt.Errorf("extract members beneath pool %s before Gateway deletion: %w", pool.ID, err)
 		}
 		sort.Slice(memberList, func(i, j int) bool {
 			if memberList[i].Address == memberList[j].Address {
@@ -408,17 +380,17 @@ func (p *Provider) executeGatewayDeletionStep(ctx context.Context, step gatewayD
 func (p *Provider) deleteGatewayResource(ctx context.Context, step gatewayDeletionStep) error {
 	switch step.resource {
 	case gatewayDeletionL7Rule:
-		return l7policies.DeleteRule(ctx, p.clients.LoadBalancer, step.parentID, step.resourceID).ExtractErr()
+		return p.octavia.DeleteRule(ctx, step.parentID, step.resourceID)
 	case gatewayDeletionL7Policy:
-		return l7policies.Delete(ctx, p.clients.LoadBalancer, step.resourceID).ExtractErr()
+		return p.octavia.DeletePolicy(ctx, step.resourceID)
 	case gatewayDeletionListener:
-		return listeners.Delete(ctx, p.clients.LoadBalancer, step.resourceID).ExtractErr()
+		return p.octavia.DeleteListener(ctx, step.resourceID)
 	case gatewayDeletionMonitor:
-		return monitors.Delete(ctx, p.clients.LoadBalancer, step.resourceID).ExtractErr()
+		return p.octavia.DeleteMonitor(ctx, step.resourceID)
 	case gatewayDeletionMember:
-		return pools.DeleteMember(ctx, p.clients.LoadBalancer, step.parentID, step.resourceID).ExtractErr()
+		return p.octavia.DeleteMember(ctx, step.parentID, step.resourceID)
 	case gatewayDeletionPool:
-		return pools.Delete(ctx, p.clients.LoadBalancer, step.resourceID).ExtractErr()
+		return p.octavia.DeletePool(ctx, step.resourceID)
 	default:
 		return fmt.Errorf("unsupported Gateway deletion resource %q", step.resource)
 	}
@@ -438,13 +410,9 @@ func (p *Provider) findGatewayLoadBalancer(ctx context.Context, identity Identit
 	if err != nil {
 		return nil, err
 	}
-	pages, err := loadbalancers.List(p.clients.LoadBalancer, loadbalancers.ListOpts{ProjectID: p.clients.ProjectID, Tags: tags}).AllPages(ctx)
+	items, err := p.octavia.ListLoadBalancers(ctx, loadbalancers.ListOpts{ProjectID: p.projectID, Tags: tags})
 	if err != nil {
 		return nil, fmt.Errorf("list managed load balancers: %w", err)
-	}
-	items, err := loadbalancers.ExtractLoadBalancers(pages)
-	if err != nil {
-		return nil, fmt.Errorf("extract managed load balancers: %w", err)
 	}
 	if len(items) > 1 {
 		return nil, fmt.Errorf("%w: found %d load balancers for one Gateway", cloud.ErrOwnershipConflict, len(items))

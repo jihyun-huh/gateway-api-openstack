@@ -14,14 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package clients
 
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -107,7 +109,7 @@ func TestRateLimitedRoundTripperHonorsRequestDeadline(t *testing.T) {
 	requestCount := 0
 	transport := &rateLimitedRoundTripper{
 		limiter: rate.NewLimiter(0, 1),
-		next: safetyRoundTripper(func(*http.Request) (*http.Response, error) {
+		next: testRoundTripper(func(*http.Request) (*http.Response, error) {
 			requestCount++
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody}, nil
 		}),
@@ -130,6 +132,35 @@ func TestRateLimitedRoundTripperHonorsRequestDeadline(t *testing.T) {
 	}
 	if requestCount != 1 {
 		t.Fatalf("wrapped transport requests = %d, want 1", requestCount)
+	}
+}
+
+type testRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip testRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func safetyServiceClient(handler http.Handler) *gophercloud.ServiceClient {
+	providerClient := &gophercloud.ProviderClient{TokenID: "test-token"}
+	providerClient.HTTPClient.Transport = testRoundTripper(func(request *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		result := response.Result()
+		result.Request = request
+		return result, nil
+	})
+	return &gophercloud.ServiceClient{
+		ProviderClient: providerClient,
+		Endpoint:       "http://openstack.test/",
+	}
+}
+
+func safetyWriteJSON(t *testing.T, writer http.ResponseWriter, value any) {
+	t.Helper()
+	writer.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(writer).Encode(value); err != nil {
+		t.Fatalf("encode JSON response: %v", err)
 	}
 }
 

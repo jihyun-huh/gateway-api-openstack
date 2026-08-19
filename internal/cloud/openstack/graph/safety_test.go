@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -402,7 +402,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 	}, ProviderConfig{})
 	ready := false
 	for attempt := 0; attempt < 10; attempt++ {
-		outcome, err := provider.DeleteGateway(context.Background(), identity.value)
+		outcome, err := provider.DeleteGateway(context.Background(), identity.Value())
 		if err != nil {
 			t.Fatalf("DeleteGateway() attempt %d error = %v", attempt+1, err)
 		}

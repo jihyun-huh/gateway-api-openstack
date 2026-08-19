@@ -14,7 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+// Package identity encodes and validates immutable OpenStack ownership
+// metadata for the resources managed by this controller.
+package identity
 
 import (
 	"crypto/sha256"
@@ -33,7 +35,26 @@ const (
 	// probe resources. It is deliberately not a Gateway API controller name.
 	Phase0ControllerIdentifier = "openstack-gateway-controller"
 
-	openStackResourceNamePrefix = "gateway-api-openstack"
+	// RoleLoadBalancer identifies the Gateway's Octavia load balancer.
+	RoleLoadBalancer = "loadbalancer"
+	// RoleListener identifies the Gateway's HTTP listener.
+	RoleListener = "listener"
+	// RoleFloatingIP identifies the Gateway's Neutron Floating IP.
+	RoleFloatingIP = "floating-ip"
+	// RolePool identifies an HTTPRoute backend pool.
+	RolePool = "pool"
+	// RoleMember identifies an HTTPRoute backend member.
+	RoleMember = "member"
+	// RoleMonitor identifies an HTTPRoute health monitor.
+	RoleMonitor = "health-monitor"
+	// RolePolicyExact identifies an exact-path L7 policy.
+	RolePolicyExact = "l7-policy-exact"
+	// RolePolicyPrefix identifies a path-prefix L7 policy.
+	RolePolicyPrefix = "l7-policy-prefix"
+	// RoleRulePath identifies a path L7 rule.
+	RoleRulePath = "l7-rule-path"
+	// RoleRuleHost identifies a hostname L7 rule.
+	RoleRuleHost = "l7-rule-host"
 )
 
 // Identity encodes the shared immutable ownership tuple into Octavia tags and
@@ -48,6 +69,42 @@ func NewIdentity(resourceIdentity cloud.Identity) (Identity, error) {
 		return Identity{}, err
 	}
 	return Identity{value: resourceIdentity}, nil
+}
+
+// Value returns the provider-neutral identity wrapped by this value.
+func (id Identity) Value() cloud.Identity {
+	return id.value
+}
+
+// ScopeTags returns the tags used to discover resources belonging to one
+// controller and cluster during a read-only ownership inventory.
+func ScopeTags(clusterID, controller string) []string {
+	return []string{
+		identityPrefix + "managed=true",
+		tag("cluster", clusterID),
+		tag("controller", controller),
+	}
+}
+
+// HasAllTags reports whether actual contains each expected identity key and
+// value exactly once.
+func HasAllTags(actual, expected []string) bool {
+	return containsAll(actual, expected)
+}
+
+// Tag encodes one ownership identity tag.
+func Tag(key, value string) string {
+	return tag(key, value)
+}
+
+// ParseTag parses one ownership identity tag without decoding its value.
+func ParseTag(value string) (string, string, bool) {
+	return parseIdentityTag(value)
+}
+
+// EncodeValue encodes a raw identity value in the same form used by tags.
+func EncodeValue(value string) string {
+	return encode(value)
 }
 
 // GatewayTags returns the complete Gateway ownership tuple for a resource.

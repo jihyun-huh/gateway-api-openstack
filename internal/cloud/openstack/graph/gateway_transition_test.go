@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package graph
 
 import (
 	"context"
@@ -167,10 +167,14 @@ func TestEnsureGatewayDefersAdministrativeRepairToBoundRoute(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			identity := safetyTestIdentity(t)
-			gatewayIdentity := identity
-			gatewayIdentity.value.RouteNamespace = ""
-			gatewayIdentity.value.RouteName = ""
-			gatewayIdentity.value.RouteUID = ""
+			gatewayValue := identity.Value()
+			gatewayValue.RouteNamespace = ""
+			gatewayValue.RouteName = ""
+			gatewayValue.RouteUID = ""
+			gatewayIdentity, err := NewIdentity(gatewayValue)
+			if err != nil {
+				t.Fatalf("NewIdentity() error = %v", err)
+			}
 			loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
 			listenerTags := safetyGatewayTags(t, identity, roleListener)
 			poolTags := safetyRouteTags(t, identity, rolePool)
@@ -241,7 +245,7 @@ func TestGetGatewayWaitsForAdministrativelyDisabledResources(t *testing.T) {
 				ProjectID:    "project-a",
 			}, ProviderConfig{PollInterval: 7 * time.Second})
 
-			result, found, err := provider.GetGateway(context.Background(), identity.value)
+			result, found, err := provider.GetGateway(context.Background(), identity.Value())
 			if err != nil {
 				t.Fatalf("GetGateway() error = %v", err)
 			}
@@ -440,7 +444,7 @@ func TestDeleteGatewayPendingReturnsWithoutMutation(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 11 * time.Second})
 
-	outcome, err := provider.DeleteGateway(context.Background(), identity.value)
+	outcome, err := provider.DeleteGateway(context.Background(), identity.Value())
 	if err != nil {
 		t.Fatalf("DeleteGateway() error = %v", err)
 	}
@@ -485,7 +489,7 @@ func TestDeleteGatewayExecutesOnlyFirstValidatedStep(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{PollInterval: 5 * time.Second})
 
-	outcome, err := provider.DeleteGateway(context.Background(), identity.value)
+	outcome, err := provider.DeleteGateway(context.Background(), identity.Value())
 	if err != nil {
 		t.Fatalf("DeleteGateway() error = %v", err)
 	}
@@ -503,7 +507,7 @@ func TestDeleteGatewayExecutesOnlyFirstValidatedStep(t *testing.T) {
 
 func gatewayTransitionSpec(identity Identity) cloud.GatewaySpec {
 	return cloud.GatewaySpec{
-		Identity:     identity.value,
+		Identity:     identity.Value(),
 		Provider:     "amphora",
 		VIPSubnetID:  "vip-subnet",
 		ListenerName: "http",

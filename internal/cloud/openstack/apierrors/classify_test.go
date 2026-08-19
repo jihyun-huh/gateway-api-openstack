@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package openstack
+package apierrors
 
 import (
 	"context"
@@ -176,7 +176,7 @@ func TestClassifyOpenStackError(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := classifyOpenStackError(test.err)
+			got := Classify(test.err)
 			category, classified := cloud.ErrorCategoryOf(got)
 			if test.unclassified {
 				if classified {
@@ -196,40 +196,20 @@ func TestClassifyOpenStackError(t *testing.T) {
 
 func TestClassifyOpenStackErrorPreservesExistingCategory(t *testing.T) {
 	want := cloud.NewProviderError(cloud.ErrorCategoryOwnershipConflict, errors.New("foreign resource"))
-	if got := classifyOpenStackError(want); got != want {
+	if got := Classify(want); got != want {
 		t.Fatalf("classifyOpenStackError() = %v, want original classified error", got)
 	}
 }
 
 func TestClassifyOctaviaMutationConflict(t *testing.T) {
 	response := responseError(http.StatusConflict, []byte(`{"faultstring":"Load balancer is immutable"}`))
-	got := classifyOctaviaMutationError(response)
+	got := ClassifyOctaviaMutation(response)
 	if !errors.Is(got, cloud.ErrRetryableService) {
 		t.Fatalf("classifyOctaviaMutationError() = %v, want retryable service category", got)
 	}
 	status, _, ok := openStackResponse(got)
 	if !ok || status != http.StatusConflict {
 		t.Fatalf("classifyOctaviaMutationError() did not retain 409 response: %v", got)
-	}
-}
-
-func TestEnsureGatewayClassifiesGophercloudFailure(t *testing.T) {
-	identity := safetyTestIdentity(t)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "too many requests", http.StatusTooManyRequests)
-	})
-	provider := NewProvider(ServiceClients{
-		LoadBalancer: safetyServiceClient(handler),
-		ProjectID:    "project-a",
-	}, ProviderConfig{})
-
-	_, err := provider.EnsureGateway(context.Background(), gatewayTransitionSpec(identity))
-	if !errors.Is(err, cloud.ErrRateLimited) {
-		t.Fatalf("EnsureGateway() error = %v, want rate limit category", err)
-	}
-	var response gophercloud.ErrUnexpectedResponseCode
-	if !errors.As(err, &response) || response.Actual != http.StatusTooManyRequests {
-		t.Fatalf("EnsureGateway() error did not retain Gophercloud response: %v", err)
 	}
 }
 
