@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"net"
 	"sort"
 	"strings"
 
@@ -48,7 +49,15 @@ func generationOrDeletionChanged(oldObject, newObject client.Object) bool {
 		!equality.Semantic.DeepEqual(oldObject.GetDeletionTimestamp(), newObject.GetDeletionTimestamp())
 }
 
-func gatewayClassReconcilePredicate() predicate.Predicate {
+// GenerationOrDeletionChangedPredicate watches desired-state and lifecycle
+// transitions while ignoring status-only updates.
+func GenerationOrDeletionChangedPredicate() predicate.Predicate {
+	return updatePredicate(generationOrDeletionChanged)
+}
+
+// GatewayClassReconcilePredicate selects GatewayClass changes that may affect
+// ownership, lifecycle, or supported status.
+func GatewayClassReconcilePredicate() predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldClass, oldOK := oldObject.(*gatewayv1.GatewayClass)
 		newClass, newOK := newObject.(*gatewayv1.GatewayClass)
@@ -64,7 +73,9 @@ func gatewayClassReconcilePredicate() predicate.Predicate {
 	})
 }
 
-func gatewayReconcilePredicate(config Config) predicate.Predicate {
+// GatewayReconcilePredicate selects Gateway desired-state, lifecycle, and
+// durable binding changes.
+func GatewayReconcilePredicate(config Config) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldGateway, oldOK := oldObject.(*gatewayv1.Gateway)
 		newGateway, newOK := newObject.(*gatewayv1.Gateway)
@@ -76,7 +87,9 @@ func gatewayReconcilePredicate(config Config) predicate.Predicate {
 	})
 }
 
-func gatewayClassForGatewayPredicate() predicate.Predicate {
+// GatewayClassForGatewayPredicate selects GatewayClass changes that may affect
+// a referencing Gateway.
+func GatewayClassForGatewayPredicate() predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldClass, oldOK := oldObject.(*gatewayv1.GatewayClass)
 		newClass, newOK := newObject.(*gatewayv1.GatewayClass)
@@ -91,7 +104,9 @@ func gatewayClassForGatewayPredicate() predicate.Predicate {
 	})
 }
 
-func gatewayAPICRDReconcilePredicate() predicate.Predicate {
+// GatewayAPICRDReconcilePredicate selects Gateway API CRD lifecycle and bundle
+// version changes.
+func GatewayAPICRDReconcilePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(event event.CreateEvent) bool {
 			return isGatewayAPICRD(event.Object)
@@ -103,7 +118,7 @@ func gatewayAPICRDReconcilePredicate() predicate.Predicate {
 			if event.ObjectOld == nil || event.ObjectNew == nil {
 				return true
 			}
-			if !isGatewayAPICRDName(event.ObjectOld.GetName()) && !isGatewayAPICRDName(event.ObjectNew.GetName()) {
+			if !IsGatewayAPICRDName(event.ObjectOld.GetName()) && !IsGatewayAPICRDName(event.ObjectNew.GetName()) {
 				return false
 			}
 			return generationOrDeletionChanged(event.ObjectOld, event.ObjectNew) ||
@@ -118,10 +133,12 @@ func gatewayAPICRDReconcilePredicate() predicate.Predicate {
 }
 
 func isGatewayAPICRD(object client.Object) bool {
-	return object != nil && isGatewayAPICRDName(object.GetName())
+	return object != nil && IsGatewayAPICRDName(object.GetName())
 }
 
-func httpRouteReconcilePredicate(config Config) predicate.Predicate {
+// HTTPRouteReconcilePredicate selects HTTPRoute desired-state, lifecycle, and
+// durable binding changes.
+func HTTPRouteReconcilePredicate(config Config) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldRoute, oldOK := oldObject.(*gatewayv1.HTTPRoute)
 		newRoute, newOK := newObject.(*gatewayv1.HTTPRoute)
@@ -133,11 +150,15 @@ func httpRouteReconcilePredicate(config Config) predicate.Predicate {
 	})
 }
 
-func httpRoutePeerPredicate() predicate.Predicate {
+// HTTPRoutePeerPredicate selects HTTPRoute changes that may alter route
+// selection for another route.
+func HTTPRoutePeerPredicate() predicate.Predicate {
 	return updatePredicate(generationOrDeletionChanged)
 }
 
-func httpRouteForGatewayPredicate(config Config) predicate.Predicate {
+// HTTPRouteForGatewayPredicate selects HTTPRoute changes that may affect a
+// Gateway's attached route state.
+func HTTPRouteForGatewayPredicate(config Config) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldRoute, oldOK := oldObject.(*gatewayv1.HTTPRoute)
 		newRoute, newOK := newObject.(*gatewayv1.HTTPRoute)
@@ -153,7 +174,9 @@ func httpRouteForGatewayPredicate(config Config) predicate.Predicate {
 	})
 }
 
-func gatewayForHTTPRoutePredicate(config Config) predicate.Predicate {
+// GatewayForHTTPRoutePredicate selects Gateway changes that may affect a
+// referencing HTTPRoute.
+func GatewayForHTTPRoutePredicate(config Config) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldGateway, oldOK := oldObject.(*gatewayv1.Gateway)
 		newGateway, newOK := newObject.(*gatewayv1.Gateway)
@@ -167,7 +190,8 @@ func gatewayForHTTPRoutePredicate(config Config) predicate.Predicate {
 	})
 }
 
-func endpointSlicePredicate() predicate.Predicate {
+// EndpointSlicePredicate selects changes to backend addresses or readiness.
+func EndpointSlicePredicate() predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldSlice, oldOK := oldObject.(*discoveryv1.EndpointSlice)
 		newSlice, newOK := newObject.(*discoveryv1.EndpointSlice)
@@ -178,7 +202,8 @@ func endpointSlicePredicate() predicate.Predicate {
 	})
 }
 
-func nodePredicate(addressType corev1.NodeAddressType) predicate.Predicate {
+// NodePredicate selects changes to the Node state used for NodePort members.
+func NodePredicate(addressType corev1.NodeAddressType) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldNode, oldOK := oldObject.(*corev1.Node)
 		newNode, newOK := newObject.(*corev1.Node)
@@ -189,7 +214,8 @@ func nodePredicate(addressType corev1.NodeAddressType) predicate.Predicate {
 	})
 }
 
-func servicePredicate() predicate.Predicate {
+// ServicePredicate selects Service spec changes.
+func ServicePredicate() predicate.Predicate {
 	return predicate.GenerationChangedPredicate{}
 }
 
@@ -207,13 +233,13 @@ func containsString(values []string, expected string) bool {
 }
 
 func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gateway) bool {
-	if finalizerPresenceChanged(oldGateway, newGateway, config.gatewayFinalizer()) {
+	if finalizerPresenceChanged(oldGateway, newGateway, config.GatewayFinalizer()) {
 		return true
 	}
 	for _, key := range []string{
-		config.gatewayListenerPortAnnotation(),
-		config.gatewayClusterIDAnnotation(),
-		config.gatewayProjectIDAnnotation(),
+		config.GatewayListenerPortAnnotation(),
+		config.GatewayClusterIDAnnotation(),
+		config.GatewayProjectIDAnnotation(),
 	} {
 		if oldGateway.Annotations[key] != newGateway.Annotations[key] {
 			return true
@@ -224,11 +250,11 @@ func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gate
 
 func routeBindingChanged(config Config, oldRoute, newRoute *gatewayv1.HTTPRoute) bool {
 	for _, key := range []string{
-		config.routeGatewayNamespaceAnnotation(),
-		config.routeGatewayNameAnnotation(),
-		config.routeGatewayUIDAnnotation(),
-		config.routeClusterIDAnnotation(),
-		config.routeProjectIDAnnotation(),
+		config.RouteGatewayNamespaceAnnotation(),
+		config.RouteGatewayNameAnnotation(),
+		config.RouteGatewayUIDAnnotation(),
+		config.RouteClusterIDAnnotation(),
+		config.RouteProjectIDAnnotation(),
 	} {
 		if oldRoute.Annotations[key] != newRoute.Annotations[key] {
 			return true
@@ -243,7 +269,7 @@ func routeBindingChanged(config Config, oldRoute, newRoute *gatewayv1.HTTPRoute)
 func controllerRouteFinalizers(config Config, route *gatewayv1.HTTPRoute) []string {
 	finalizers := make([]string, 0, 2)
 	for _, finalizer := range route.Finalizers {
-		if finalizer == config.routeFinalizer() || strings.HasPrefix(finalizer, config.routeBindingFinalizerPrefix()) {
+		if finalizer == config.RouteFinalizer() || strings.HasPrefix(finalizer, config.RouteBindingFinalizerPrefix()) {
 			finalizers = append(finalizers, finalizer)
 		}
 	}
@@ -371,4 +397,20 @@ func nodeBackendStateFor(node *corev1.Node, addressType corev1.NodeAddressType) 
 		}
 	}
 	return state
+}
+
+func endpointReady(conditions discoveryv1.EndpointConditions) bool {
+	if conditions.Terminating != nil && *conditions.Terminating {
+		return false
+	}
+	return conditions.Ready == nil || *conditions.Ready
+}
+
+func nodeAddress(node *corev1.Node, addressType corev1.NodeAddressType) string {
+	for _, address := range node.Status.Addresses {
+		if address.Type == addressType && net.ParseIP(address.Address) != nil {
+			return address.Address
+		}
+	}
+	return ""
 }

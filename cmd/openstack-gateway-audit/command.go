@@ -35,6 +35,7 @@ import (
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/ownershipaudit"
 )
 
 const (
@@ -126,7 +127,7 @@ func executeAudit(ctx context.Context, options commandOptions, dependencies comm
 		ClusterID:          options.clusterID,
 		OpenStackProjectID: serviceClients.ProjectID,
 	}
-	snapshot, err := controller.CollectOwnershipSnapshot(ctx, reader, controllerConfig)
+	snapshot, err := ownershipaudit.CollectOwnershipSnapshot(ctx, reader, controllerConfig)
 	if err != nil {
 		return audit.Report{}, newCommandError("could not read Kubernetes ownership bindings", err)
 	}

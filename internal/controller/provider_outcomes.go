@@ -36,26 +36,45 @@ const (
 	providerFailureRequeue         = 2 * time.Minute
 	ownershipConflictRequeue       = 10 * time.Minute
 
-	providerReasonAuthenticationFailed = "AuthenticationFailed"
-	providerReasonAuthorizationFailed  = "AuthorizationFailed"
-	providerReasonQuotaExceeded        = "QuotaExceeded"
-	providerReasonRateLimited          = "RateLimited"
-	providerReasonRequestTimedOut      = "RequestTimedOut"
-	providerReasonUnavailable          = "ProviderUnavailable"
-	providerReasonInvalidConfiguration = "InvalidProviderConfiguration"
-	providerReasonResourceFailed       = "ResourceFailed"
-	providerReasonOwnershipConflict    = "OwnershipConflict"
+	// ProviderReasonAuthenticationFailed identifies an OpenStack authentication failure.
+	ProviderReasonAuthenticationFailed = "AuthenticationFailed"
+	// ProviderReasonAuthorizationFailed identifies an OpenStack authorization failure.
+	ProviderReasonAuthorizationFailed = "AuthorizationFailed"
+	// ProviderReasonQuotaExceeded identifies insufficient OpenStack quota.
+	ProviderReasonQuotaExceeded = "QuotaExceeded"
+	// ProviderReasonRateLimited identifies OpenStack request throttling.
+	ProviderReasonRateLimited = "RateLimited"
+	// ProviderReasonRequestTimedOut identifies an OpenStack request timeout.
+	ProviderReasonRequestTimedOut = "RequestTimedOut"
+	// ProviderReasonUnavailable identifies a retryable OpenStack service failure.
+	ProviderReasonUnavailable = "ProviderUnavailable"
+	// ProviderReasonInvalidConfiguration identifies terminal provider validation.
+	ProviderReasonInvalidConfiguration = "InvalidProviderConfiguration"
+	// ProviderReasonResourceFailed identifies an OpenStack resource error state.
+	ProviderReasonResourceFailed = "ResourceFailed"
+	// ProviderReasonOwnershipConflict identifies an immutable identity mismatch.
+	ProviderReasonOwnershipConflict = "OwnershipConflict"
 )
 
-type providerFailurePolicy struct {
-	category                   cloud.ErrorCategory
-	conditionStatus            metav1.ConditionStatus
-	reason                     string
-	message                    string
-	returnError                bool
-	requeueAfter               time.Duration
-	emitEvent                  bool
-	advancesObservedGeneration bool
+// ProviderFailurePolicy describes how a classified provider error is reported
+// and retried by a reconciler.
+type ProviderFailurePolicy struct {
+	// Category is the provider-neutral error classification.
+	Category cloud.ErrorCategory
+	// ConditionStatus is the status published on the owning API object.
+	ConditionStatus metav1.ConditionStatus
+	// Reason is the stable condition and Event reason.
+	Reason string
+	// Message is the redacted operator-facing explanation.
+	Message string
+	// ReturnError requests controller-runtime workqueue backoff.
+	ReturnError bool
+	// RequeueAfter requests an explicit retry when ReturnError is false.
+	RequeueAfter time.Duration
+	// EmitEvent requests a Warning Event for the failure.
+	EmitEvent bool
+	// AdvancesObservedGeneration reports whether the input was fully evaluated.
+	AdvancesObservedGeneration bool
 }
 
 type providerReconcileError struct {
@@ -71,7 +90,9 @@ func (e *providerReconcileError) Unwrap() error {
 	return e.cause
 }
 
-func providerProgressRequeueAfter(outcome cloud.Outcome, uid types.UID) time.Duration {
+// ProviderProgressRequeueAfter returns a bounded, stable retry interval for an
+// asynchronous provider operation.
+func ProviderProgressRequeueAfter(outcome cloud.Outcome, uid types.UID) time.Duration {
 	var interval time.Duration
 	switch {
 	case outcome.RequeueAfter <= 0:
@@ -93,143 +114,157 @@ func providerProgressRequeueAfter(outcome cloud.Outcome, uid types.UID) time.Dur
 	return requeueAfter
 }
 
-func openStackResyncAfter(interval time.Duration, uid types.UID) time.Duration {
+// OpenStackResyncAfter applies stable UID-based jitter to a cloud resync
+// interval.
+func OpenStackResyncAfter(interval time.Duration, uid types.UID) time.Duration {
 	return stableJitter(interval, string(uid)+"/resync")
 }
 
-func providerProgressMessage(outcome cloud.Outcome, fallback string) string {
+// ProviderProgressMessage returns the provider progress message, or fallback
+// when the provider supplied no message.
+func ProviderProgressMessage(outcome cloud.Outcome, fallback string) string {
 	if message := strings.TrimSpace(outcome.Message); message != "" {
 		return message
 	}
 	return fallback
 }
 
-func providerFailurePolicyFor(err error) (providerFailurePolicy, bool) {
+// ProviderFailurePolicyFor maps a classified cloud error to controller retry
+// and reporting behavior.
+func ProviderFailurePolicyFor(err error) (ProviderFailurePolicy, bool) {
 	category, ok := cloud.ErrorCategoryOf(err)
 	if !ok {
-		return providerFailurePolicy{}, false
+		return ProviderFailurePolicy{}, false
 	}
 
-	policy := providerFailurePolicy{category: category}
+	policy := ProviderFailurePolicy{Category: category}
 	switch category {
 	case cloud.ErrorCategoryAuthentication:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonAuthenticationFailed
-		policy.message = "The controller could not authenticate to OpenStack"
-		policy.requeueAfter = providerFailureRequeue
-		policy.emitEvent = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonAuthenticationFailed
+		policy.Message = "The controller could not authenticate to OpenStack"
+		policy.RequeueAfter = providerFailureRequeue
+		policy.EmitEvent = true
 	case cloud.ErrorCategoryAuthorization:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonAuthorizationFailed
-		policy.message = "OpenStack denied the requested operation"
-		policy.requeueAfter = providerFailureRequeue
-		policy.emitEvent = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonAuthorizationFailed
+		policy.Message = "OpenStack denied the requested operation"
+		policy.RequeueAfter = providerFailureRequeue
+		policy.EmitEvent = true
 	case cloud.ErrorCategoryQuota:
-		policy.conditionStatus = metav1.ConditionFalse
-		policy.reason = providerReasonQuotaExceeded
-		policy.message = "OpenStack quota is insufficient for the requested resources"
-		policy.requeueAfter = providerFailureRequeue
-		policy.emitEvent = true
-		policy.advancesObservedGeneration = true
+		policy.ConditionStatus = metav1.ConditionFalse
+		policy.Reason = ProviderReasonQuotaExceeded
+		policy.Message = "OpenStack quota is insufficient for the requested resources"
+		policy.RequeueAfter = providerFailureRequeue
+		policy.EmitEvent = true
+		policy.AdvancesObservedGeneration = true
 	case cloud.ErrorCategoryRateLimit:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonRateLimited
-		policy.message = "OpenStack rate limited the requested operation"
-		policy.returnError = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonRateLimited
+		policy.Message = "OpenStack rate limited the requested operation"
+		policy.ReturnError = true
 	case cloud.ErrorCategoryTimeout:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonRequestTimedOut
-		policy.message = "The OpenStack request timed out"
-		policy.returnError = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonRequestTimedOut
+		policy.Message = "The OpenStack request timed out"
+		policy.ReturnError = true
 	case cloud.ErrorCategoryRetryableService:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonUnavailable
-		policy.message = "OpenStack could not complete the request"
-		policy.returnError = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonUnavailable
+		policy.Message = "OpenStack could not complete the request"
+		policy.ReturnError = true
 	case cloud.ErrorCategoryTerminalValidation:
-		policy.conditionStatus = metav1.ConditionFalse
-		policy.reason = providerReasonInvalidConfiguration
-		policy.message = "OpenStack rejected the requested configuration"
-		policy.emitEvent = true
-		policy.advancesObservedGeneration = true
+		policy.ConditionStatus = metav1.ConditionFalse
+		policy.Reason = ProviderReasonInvalidConfiguration
+		policy.Message = "OpenStack rejected the requested configuration"
+		policy.EmitEvent = true
+		policy.AdvancesObservedGeneration = true
 	case cloud.ErrorCategoryResourceFailure:
-		policy.conditionStatus = metav1.ConditionFalse
-		policy.reason = providerReasonResourceFailed
-		policy.message = "An OpenStack resource entered an error state"
-		policy.requeueAfter = providerFailureRequeue
-		policy.emitEvent = true
-		policy.advancesObservedGeneration = true
+		policy.ConditionStatus = metav1.ConditionFalse
+		policy.Reason = ProviderReasonResourceFailed
+		policy.Message = "An OpenStack resource entered an error state"
+		policy.RequeueAfter = providerFailureRequeue
+		policy.EmitEvent = true
+		policy.AdvancesObservedGeneration = true
 	case cloud.ErrorCategoryOwnershipConflict:
-		policy.conditionStatus = metav1.ConditionFalse
-		policy.reason = providerReasonOwnershipConflict
-		policy.message = "The OpenStack resource identity does not match the controller binding"
-		policy.requeueAfter = ownershipConflictRequeue
-		policy.emitEvent = true
-		policy.advancesObservedGeneration = true
+		policy.ConditionStatus = metav1.ConditionFalse
+		policy.Reason = ProviderReasonOwnershipConflict
+		policy.Message = "The OpenStack resource identity does not match the controller binding"
+		policy.RequeueAfter = ownershipConflictRequeue
+		policy.EmitEvent = true
+		policy.AdvancesObservedGeneration = true
 	default:
-		policy.conditionStatus = metav1.ConditionUnknown
-		policy.reason = providerReasonUnavailable
-		policy.message = "OpenStack could not complete the request"
-		policy.returnError = true
+		policy.ConditionStatus = metav1.ConditionUnknown
+		policy.Reason = ProviderReasonUnavailable
+		policy.Message = "OpenStack could not complete the request"
+		policy.ReturnError = true
 	}
 	return policy, true
 }
 
-func providerCleanupFailurePolicy(policy providerFailurePolicy, resourceKind string) providerFailurePolicy {
-	switch policy.category {
+// ProviderCleanupFailurePolicy adapts a provider failure policy for a resource
+// finalization diagnostic.
+func ProviderCleanupFailurePolicy(policy ProviderFailurePolicy, resourceKind string) ProviderFailurePolicy {
+	switch policy.Category {
 	case cloud.ErrorCategoryAuthentication:
-		policy.message = resourceKind + " cleanup cannot continue because OpenStack authentication failed"
+		policy.Message = resourceKind + " cleanup cannot continue because OpenStack authentication failed"
 	case cloud.ErrorCategoryAuthorization:
-		policy.message = resourceKind + " cleanup cannot continue because OpenStack denied the delete operation"
+		policy.Message = resourceKind + " cleanup cannot continue because OpenStack denied the delete operation"
 	case cloud.ErrorCategoryQuota:
-		policy.message = resourceKind + " cleanup cannot continue because OpenStack reported insufficient quota"
+		policy.Message = resourceKind + " cleanup cannot continue because OpenStack reported insufficient quota"
 	case cloud.ErrorCategoryRateLimit:
-		policy.message = resourceKind + " cleanup is waiting for the OpenStack rate limit to clear"
+		policy.Message = resourceKind + " cleanup is waiting for the OpenStack rate limit to clear"
 	case cloud.ErrorCategoryTimeout:
-		policy.message = resourceKind + " cleanup is waiting after an OpenStack request timed out"
+		policy.Message = resourceKind + " cleanup is waiting after an OpenStack request timed out"
 	case cloud.ErrorCategoryRetryableService:
-		policy.message = resourceKind + " cleanup is waiting for OpenStack to become available"
+		policy.Message = resourceKind + " cleanup is waiting for OpenStack to become available"
 	case cloud.ErrorCategoryTerminalValidation:
-		policy.message = resourceKind + " cleanup cannot continue because OpenStack rejected the delete operation"
+		policy.Message = resourceKind + " cleanup cannot continue because OpenStack rejected the delete operation"
 	case cloud.ErrorCategoryResourceFailure:
-		policy.message = resourceKind + " cleanup cannot continue because an OpenStack resource is in an error state"
+		policy.Message = resourceKind + " cleanup cannot continue because an OpenStack resource is in an error state"
 	case cloud.ErrorCategoryOwnershipConflict:
-		policy.message = resourceKind + " cleanup cannot continue because the OpenStack resource identity does not match the controller binding"
+		policy.Message = resourceKind + " cleanup cannot continue because the OpenStack resource identity does not match the controller binding"
 	default:
-		policy.message = resourceKind + " cleanup is waiting for OpenStack to complete the delete operation"
+		policy.Message = resourceKind + " cleanup is waiting for OpenStack to complete the delete operation"
 	}
 	return policy
 }
 
-func safeProviderReconcileError(policy providerFailurePolicy, cause error) error {
-	return &providerReconcileError{message: policy.message, cause: cause}
+// SafeProviderReconcileError wraps a provider error with its redacted policy
+// message while retaining the original error for classification.
+func SafeProviderReconcileError(policy ProviderFailurePolicy, cause error) error {
+	return &providerReconcileError{message: policy.Message, cause: cause}
 }
 
-func providerFailureResult(policy providerFailurePolicy, cause error, key string) (ctrl.Result, error) {
+// ProviderFailureResult converts a provider failure policy into a reconcile
+// result for normal reconciliation.
+func ProviderFailureResult(policy ProviderFailurePolicy, cause error, key string) (ctrl.Result, error) {
 	return providerFailureResultForOperation(policy, cause, key, false)
 }
 
-func providerFinalizationFailureResult(policy providerFailurePolicy, cause error, key string) (ctrl.Result, error) {
+// ProviderFinalizationFailureResult converts a provider failure policy into a
+// reconcile result that keeps finalization progressing.
+func ProviderFinalizationFailureResult(policy ProviderFailurePolicy, cause error, key string) (ctrl.Result, error) {
 	return providerFailureResultForOperation(policy, cause, key, true)
 }
 
 func providerFailureResultForOperation(
-	policy providerFailurePolicy,
+	policy ProviderFailurePolicy,
 	cause error,
 	key string,
 	finalizing bool,
 ) (ctrl.Result, error) {
-	if policy.returnError {
-		return ctrl.Result{}, safeProviderReconcileError(policy, cause)
+	if policy.ReturnError {
+		return ctrl.Result{}, SafeProviderReconcileError(policy, cause)
 	}
-	requeueAfter := policy.requeueAfter
+	requeueAfter := policy.RequeueAfter
 	if finalizing && requeueAfter == 0 {
 		requeueAfter = providerFailureRequeue
 	}
 	if requeueAfter == 0 {
 		return ctrl.Result{}, nil
 	}
-	return ctrl.Result{RequeueAfter: stableJitter(requeueAfter, fmt.Sprintf("%s/%s", key, policy.category))}, nil
+	return ctrl.Result{RequeueAfter: stableJitter(requeueAfter, fmt.Sprintf("%s/%s", key, policy.Category))}, nil
 }
 
 // stableJitter spreads periodic work across a bounded interval while keeping

@@ -18,16 +18,14 @@ package openstack
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/octavia"
 )
 
-// WaitLoadBalancerActive waits until Octavia has completed the current
-// asynchronous operation for a load balancer.
+// WaitLoadBalancerActive retains the Phase 0 probe compatibility facade.
 func WaitLoadBalancerActive(
 	ctx context.Context,
 	client *gophercloud.ServiceClient,
@@ -35,32 +33,10 @@ func WaitLoadBalancerActive(
 	timeout time.Duration,
 	pollInterval time.Duration,
 ) (*loadbalancers.LoadBalancer, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		loadBalancer, err := loadbalancers.Get(waitCtx, client, loadBalancerID).Extract()
-		if err != nil {
-			return nil, fmt.Errorf("get load balancer %s: %w", loadBalancerID, err)
-		}
-		switch loadBalancer.ProvisioningStatus {
-		case "ACTIVE":
-			return loadBalancer, nil
-		case "ERROR":
-			return nil, fmt.Errorf("load balancer %s entered ERROR", loadBalancerID)
-		}
-
-		select {
-		case <-waitCtx.Done():
-			return nil, fmt.Errorf("wait for load balancer %s to become ACTIVE: %w", loadBalancerID, waitCtx.Err())
-		case <-ticker.C:
-		}
-	}
+	return octavia.WaitLoadBalancerActive(ctx, client, loadBalancerID, timeout, pollInterval)
 }
 
-// WaitLoadBalancerDeleted waits until Octavia returns 404 for a load balancer.
+// WaitLoadBalancerDeleted retains the Phase 0 probe compatibility facade.
 func WaitLoadBalancerDeleted(
 	ctx context.Context,
 	client *gophercloud.ServiceClient,
@@ -68,31 +44,10 @@ func WaitLoadBalancerDeleted(
 	timeout time.Duration,
 	pollInterval time.Duration,
 ) error {
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		_, err := loadbalancers.Get(waitCtx, client, loadBalancerID).Extract()
-		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("get deleting load balancer %s: %w", loadBalancerID, err)
-		}
-
-		select {
-		case <-waitCtx.Done():
-			return fmt.Errorf("wait for load balancer %s deletion: %w", loadBalancerID, waitCtx.Err())
-		case <-ticker.C:
-		}
-	}
+	return octavia.WaitLoadBalancerDeleted(ctx, client, loadBalancerID, timeout, pollInterval)
 }
 
 // IsNotFound reports whether an OpenStack request returned HTTP 404.
 func IsNotFound(err error) bool {
-	return gophercloud.ResponseCodeIs(err, http.StatusNotFound)
+	return octavia.IsNotFound(err)
 }
-
-func isNotFound(err error) bool { return IsNotFound(err) }

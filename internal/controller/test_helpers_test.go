@@ -17,101 +17,14 @@ limitations under the License.
 package controller
 
 import (
-	"context"
-	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
-
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
-
-type recordingProvider struct {
-	gatewaySpecs     []cloud.GatewaySpec
-	gatewayResult    *cloud.GatewayResult
-	gatewayErr       error
-	gatewayGetResult *cloud.GatewayResult
-	gatewayGetFound  *bool
-	gatewayGetErr    error
-	gatewayDeleteOut *cloud.Outcome
-	gatewayDeleteErr error
-	gatewayGets      int
-	routeSpecs       []cloud.RouteSpec
-	routeResult      *cloud.RouteResult
-	routeErr         error
-	routeDeleteOut   *cloud.Outcome
-	routeDeleteErr   error
-	deletedGateways  []cloud.Identity
-	deletedRoutes    []cloud.Identity
-}
-
-func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewaySpec) (cloud.GatewayResult, error) {
-	p.gatewaySpecs = append(p.gatewaySpecs, spec)
-	if p.gatewayErr != nil {
-		return cloud.GatewayResult{}, p.gatewayErr
-	}
-	if p.gatewayResult != nil {
-		return *p.gatewayResult, nil
-	}
-	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), nil
-}
-
-func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
-	p.gatewayGets++
-	if p.gatewayGetErr != nil {
-		return cloud.GatewayResult{}, false, p.gatewayGetErr
-	}
-	found := true
-	if p.gatewayGetFound != nil {
-		found = *p.gatewayGetFound
-	}
-	if p.gatewayGetResult != nil {
-		return *p.gatewayGetResult, found, nil
-	}
-	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), found, nil
-}
-
-func (p *recordingProvider) DeleteGateway(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
-	p.deletedGateways = append(p.deletedGateways, identity)
-	if p.gatewayDeleteErr != nil {
-		return cloud.Outcome{}, p.gatewayDeleteErr
-	}
-	if p.gatewayDeleteOut != nil {
-		return *p.gatewayDeleteOut, nil
-	}
-	return cloud.ReadyOutcome(), nil
-}
-
-func (p *recordingProvider) EnsureRoute(_ context.Context, spec cloud.RouteSpec) (cloud.RouteResult, error) {
-	p.routeSpecs = append(p.routeSpecs, spec)
-	if p.routeErr != nil {
-		return cloud.RouteResult{}, p.routeErr
-	}
-	if p.routeResult != nil {
-		return *p.routeResult, nil
-	}
-	return cloud.RouteReadyResult(cloud.RouteState{PoolID: "pool-1"}), nil
-}
-
-func (p *recordingProvider) DeleteRoute(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
-	p.deletedRoutes = append(p.deletedRoutes, identity)
-	if p.routeDeleteErr != nil {
-		return cloud.Outcome{}, p.routeDeleteErr
-	}
-	if p.routeDeleteOut != nil {
-		return *p.routeDeleteOut, nil
-	}
-	return cloud.ReadyOutcome(), nil
-}
 
 func testConfig() Config {
 	return Config{
@@ -129,100 +42,13 @@ func testConfig() Config {
 	}
 }
 
-func gatewayBindingAnnotations(cfg Config, listenerPort string) map[string]string {
-	return map[string]string{
-		cfg.gatewayListenerPortAnnotation(): listenerPort,
-		cfg.gatewayClusterIDAnnotation():    cfg.ClusterID,
-		cfg.gatewayProjectIDAnnotation():    cfg.OpenStackProjectID,
+func gatewayAPICRD(name, bundleVersion string) *apiextensionsv1.CustomResourceDefinition {
+	annotations := map[string]string{}
+	if bundleVersion != "" {
+		annotations[gatewayconsts.BundleVersionAnnotation] = bundleVersion
 	}
-}
-
-func testScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: annotations},
+		Spec:       apiextensionsv1.CustomResourceDefinitionSpec{Group: gatewayv1.GroupName},
 	}
-	if err := discoveryv1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := gatewayv1.Install(scheme); err != nil {
-		t.Fatal(err)
-	}
-	return scheme
-}
-
-type controllerTestClientBuilder struct {
-	builder           *fake.ClientBuilder
-	hasGatewayAPICRDs bool
-}
-
-// WithObjects gives ordinary controller tests the supported bundle that the
-// version controller establishes before provisioning can begin. Version tests
-// pass explicit CRDs or conditions to override this fixture.
-func (b *controllerTestClientBuilder) WithObjects(objects ...client.Object) *controllerTestClientBuilder {
-	for _, object := range objects {
-		if definition, ok := object.(*apiextensionsv1.CustomResourceDefinition); ok &&
-			isGatewayAPIGroup(definition.Spec.Group) {
-			b.hasGatewayAPICRDs = true
-		}
-		gatewayClass, ok := object.(*gatewayv1.GatewayClass)
-		if !ok || meta.FindStatusCondition(
-			gatewayClass.Status.Conditions,
-			string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
-		) != nil {
-			continue
-		}
-		setCondition(&gatewayClass.Status.Conditions, condition(
-			string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
-			metav1.ConditionTrue,
-			string(gatewayv1.GatewayClassReasonSupportedVersion),
-			"Installed Gateway API CRDs use supported bundle version "+gatewayconsts.BundleVersion,
-			gatewayClass.Generation,
-		))
-	}
-	b.builder = b.builder.WithObjects(objects...)
-	return b
-}
-
-func (b *controllerTestClientBuilder) WithStatusSubresource(objects ...client.Object) *controllerTestClientBuilder {
-	b.builder = b.builder.WithStatusSubresource(objects...)
-	return b
-}
-
-func (b *controllerTestClientBuilder) Build() client.WithWatch {
-	if !b.hasGatewayAPICRDs {
-		definitions := make([]client.Object, 0, len(requiredGatewayAPICRDs))
-		for _, name := range requiredGatewayAPICRDs {
-			definitions = append(definitions, &apiextensionsv1.CustomResourceDefinition{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: name,
-					Annotations: map[string]string{
-						gatewayconsts.BundleVersionAnnotation: gatewayconsts.BundleVersion,
-					},
-				},
-				Spec: apiextensionsv1.CustomResourceDefinitionSpec{Group: gatewayv1.GroupName},
-			})
-		}
-		b.builder = b.builder.WithObjects(definitions...)
-	}
-	return b.builder.Build()
-}
-
-func indexedFakeClientBuilder(scheme *runtime.Scheme, config Config) *controllerTestClientBuilder {
-	return &controllerTestClientBuilder{builder: rawIndexedFakeClientBuilder(scheme, config)}
-}
-
-func rawIndexedFakeClientBuilder(scheme *runtime.Scheme, config Config) *fake.ClientBuilder {
-	builder := fake.NewClientBuilder().WithScheme(scheme)
-	for _, index := range controllerFieldIndexes(config) {
-		if _, _, err := scheme.ObjectKinds(index.object); err != nil {
-			continue
-		}
-		builder.WithIndex(index.object, index.field, index.extract)
-	}
-	return builder
 }

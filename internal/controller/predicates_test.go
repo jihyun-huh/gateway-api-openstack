@@ -41,7 +41,7 @@ func TestGatewayReconcilePredicate(t *testing.T) {
 		Annotations: map[string]string{"example.com/foreign": "one"},
 		Finalizers:  []string{"example.com/foreign"},
 	}}
-	pred := gatewayReconcilePredicate(cfg)
+	pred := GatewayReconcilePredicate(cfg)
 
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
 		gateway.Status.Addresses = []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.10"}}
@@ -50,10 +50,10 @@ func TestGatewayReconcilePredicate(t *testing.T) {
 		gateway.Annotations["example.com/foreign"] = "two"
 	}), false, "foreign annotation")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
-		gateway.Annotations[cfg.gatewayListenerPortAnnotation()] = "80"
+		gateway.Annotations[cfg.GatewayListenerPortAnnotation()] = "80"
 	}), true, "binding annotation")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
-		gateway.Finalizers = append(gateway.Finalizers, cfg.gatewayFinalizer())
+		gateway.Finalizers = append(gateway.Finalizers, cfg.GatewayFinalizer())
 	}), true, "controller finalizer")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
 		gateway.Generation++
@@ -70,7 +70,7 @@ func TestHTTPRouteReconcilePredicate(t *testing.T) {
 		Annotations: map[string]string{"example.com/foreign": "one"},
 		Finalizers:  []string{"example.com/foreign"},
 	}}
-	pred := httpRouteReconcilePredicate(cfg)
+	pred := HTTPRouteReconcilePredicate(cfg)
 
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
 		route.Status.Parents = []gatewayv1.RouteParentStatus{{ControllerName: cfg.ControllerName}}
@@ -79,13 +79,13 @@ func TestHTTPRouteReconcilePredicate(t *testing.T) {
 		route.Annotations["example.com/foreign"] = "two"
 	}), false, "foreign annotation")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Annotations[cfg.routeGatewayUIDAnnotation()] = "gateway-uid"
+		route.Annotations[cfg.RouteGatewayUIDAnnotation()] = "gateway-uid"
 	}), true, "binding annotation")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Finalizers = append(route.Finalizers, cfg.routeFinalizer())
+		route.Finalizers = append(route.Finalizers, cfg.RouteFinalizer())
 	}), true, "controller finalizer")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Finalizers = append(route.Finalizers, cfg.routeBindingFinalizer("cluster", "project", "default", "edge", "gateway-uid"))
+		route.Finalizers = append(route.Finalizers, cfg.RouteBindingFinalizer("cluster", "project", "default", "edge", "gateway-uid"))
 	}), true, "binding finalizer")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
 		route.Generation++
@@ -97,7 +97,7 @@ func TestHTTPRouteForGatewayPredicate(t *testing.T) {
 	cfg := testConfig()
 	otherController := gatewayv1.GatewayController("example.com/other")
 	base := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", Generation: 1}}
-	pred := httpRouteForGatewayPredicate(cfg)
+	pred := HTTPRouteForGatewayPredicate(cfg)
 
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
 		route.Status.Parents = []gatewayv1.RouteParentStatus{{ControllerName: otherController}}
@@ -106,7 +106,7 @@ func TestHTTPRouteForGatewayPredicate(t *testing.T) {
 		route.Status.Parents = []gatewayv1.RouteParentStatus{{ControllerName: cfg.ControllerName}}
 	}), true, "controller parent status")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Annotations = map[string]string{cfg.routeGatewayNameAnnotation(): "edge"}
+		route.Annotations = map[string]string{cfg.RouteGatewayNameAnnotation(): "edge"}
 	}), true, "stored Gateway binding")
 }
 
@@ -126,7 +126,7 @@ func TestGatewayForHTTPRoutePredicate(t *testing.T) {
 		Reason:             string(gatewayv1.GatewayReasonAccepted),
 		Message:            "accepted",
 	}}
-	pred := gatewayForHTTPRoutePredicate(cfg)
+	pred := GatewayForHTTPRoutePredicate(cfg)
 
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
 		gateway.Status.Addresses = []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.10"}}
@@ -154,13 +154,13 @@ func TestGatewayForHTTPRoutePredicate(t *testing.T) {
 		gateway.Status.Conditions[1].Reason = "DifferentReason"
 	}), true, "Accepted reason")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
-		gateway.Annotations = map[string]string{cfg.gatewayListenerPortAnnotation(): "80"}
+		gateway.Annotations = map[string]string{cfg.GatewayListenerPortAnnotation(): "80"}
 	}), true, "Gateway binding")
 }
 
 func TestGatewayClassAndPeerPredicates(t *testing.T) {
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack", Generation: 1}}
-	classPredicate := gatewayClassReconcilePredicate()
+	classPredicate := GatewayClassReconcilePredicate()
 	testPredicateUpdate(t, classPredicate, class, class.DeepCopy(), false, "unchanged GatewayClass")
 	foreignStatus := class.DeepCopy()
 	foreignStatus.Status.Conditions = []metav1.Condition{{Type: "example.net/Foreign"}}
@@ -179,7 +179,7 @@ func TestGatewayClassAndPeerPredicates(t *testing.T) {
 	testPredicateUpdate(t, classPredicate, class, deletingClass, true, "GatewayClass deletion")
 
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api", Generation: 1}}
-	peerPredicate := httpRoutePeerPredicate()
+	peerPredicate := HTTPRoutePeerPredicate()
 	statusChanged := route.DeepCopy()
 	statusChanged.Status.Parents = []gatewayv1.RouteParentStatus{{}}
 	testPredicateUpdate(t, peerPredicate, route, statusChanged, false, "peer status")
@@ -196,21 +196,21 @@ func TestGatewayClassAndPeerPredicates(t *testing.T) {
 
 func TestGatewayClassForGatewayPredicate(t *testing.T) {
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack", Generation: 1}}
-	setCondition(&class.Status.Conditions, condition(
+	SetCondition(&class.Status.Conditions, Condition(
 		string(gatewayv1.GatewayClassConditionStatusAccepted),
 		metav1.ConditionTrue,
 		string(gatewayv1.GatewayClassReasonAccepted),
 		"GatewayClass is accepted",
 		class.Generation,
 	))
-	setCondition(&class.Status.Conditions, condition(
+	SetCondition(&class.Status.Conditions, Condition(
 		string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
 		metav1.ConditionTrue,
 		string(gatewayv1.GatewayClassReasonSupportedVersion),
 		"Gateway API version is supported",
 		class.Generation,
 	))
-	pred := gatewayClassForGatewayPredicate()
+	pred := GatewayClassForGatewayPredicate()
 	testPredicateUpdate(t, pred, class, class.DeepCopy(), false, "unchanged GatewayClass")
 	messageChanged := class.DeepCopy()
 	meta.FindStatusCondition(messageChanged.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusSupportedVersion)).Message = "still supported"
@@ -226,7 +226,7 @@ func TestGatewayClassForGatewayPredicate(t *testing.T) {
 }
 
 func TestGatewayAPICRDReconcilePredicate(t *testing.T) {
-	pred := gatewayAPICRDReconcilePredicate()
+	pred := GatewayAPICRDReconcilePredicate()
 	definition := gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion)
 	if !pred.Create(event.CreateEvent{Object: definition}) {
 		t.Fatal("Gateway API CRD create was ignored")
@@ -273,7 +273,7 @@ func TestGatewayAPICRDReconcilePredicate(t *testing.T) {
 
 func TestServicePredicate(t *testing.T) {
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend", Generation: 1}}
-	pred := servicePredicate()
+	pred := ServicePredicate()
 	statusChanged := service.DeepCopy()
 	statusChanged.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.10"}}
 	testPredicateUpdate(t, pred, service, statusChanged, false, "Service status")
@@ -293,7 +293,7 @@ func TestEndpointSlicePredicate(t *testing.T) {
 		},
 		Endpoints: []discoveryv1.Endpoint{{NodeName: &workerOne, Conditions: discoveryv1.EndpointConditions{Ready: &ready}}},
 	}
-	pred := endpointSlicePredicate()
+	pred := EndpointSlicePredicate()
 
 	irrelevant := base.DeepCopy()
 	irrelevant.Endpoints[0].Addresses = []string{"10.0.0.10"}
@@ -329,7 +329,7 @@ func TestNodePredicate(t *testing.T) {
 			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		},
 	}
-	pred := nodePredicate(corev1.NodeInternalIP)
+	pred := NodePredicate(corev1.NodeInternalIP)
 
 	labelChanged := base.DeepCopy()
 	labelChanged.Labels = map[string]string{"example.com/zone": "one"}
@@ -362,7 +362,7 @@ func TestNodePredicate(t *testing.T) {
 
 func TestPredicatesAcceptLifecycleEvents(t *testing.T) {
 	object := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge"}}
-	pred := gatewayReconcilePredicate(testConfig())
+	pred := GatewayReconcilePredicate(testConfig())
 	if !pred.Create(event.CreateEvent{Object: object}) {
 		t.Fatal("create event was filtered")
 	}

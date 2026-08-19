@@ -78,10 +78,23 @@ code. Add the Apache 2.0 boilerplate from `hack/boilerplate` to new Go files.
 Follow the dependency boundaries in the architecture document:
 
 - `cmd` parses configuration and wires dependencies
-- `internal/controller` owns Kubernetes and Gateway API behavior
+- `internal/controller` owns shared Kubernetes-facing contracts
+- `internal/controller/gatewayclass`, `internal/controller/gateway`, and
+  `internal/controller/httproute` own their reconciler lifecycle and status
+  behavior
+- `internal/controller/graph` owns only process-local coordination by Gateway
+  UID; it is not the proposed single graph writer
 - `internal/cloud` defines provider-neutral values and interfaces
-- `internal/cloud/openstack` owns Gophercloud and OpenStack API behavior
+- `internal/cloud/openstack` is the command-facing OpenStack facade
+- packages below `internal/cloud/openstack` own clients, service operations,
+  existing provider graph operations, identity, error classification, and
+  read-only inventory
 - `internal/audit` builds provider-neutral audit reports
+
+The [development layout guide](docs/development-layout.md) shows the current
+tree and dependency direction. Do not import Gophercloud from a controller
+package, import Kubernetes types from an OpenStack package, or import the root
+OpenStack facade from one of its child packages.
 
 When a reconciler starts reading or writing another Kubernetes resource,
 update both its RBAC markers and `config/rbac/cluster_role.yaml`. Preserve

@@ -276,9 +276,12 @@ balancer. Before multiple routes or concurrent workers
 are enabled, one writer keyed by Gateway UID must compile and apply the complete
 listener graph.
 
-GatewayClass and HTTPRoute reconcilers can remain responsible for acceptance,
-reference validation, and the status fields they own. Their fragments feed the
-graph writer, but they must not issue OpenStack mutations independently.
+Gateway and HTTPRoute reconcilers can remain responsible for acceptance,
+reference validation, and the status fields they own. The graph writer reuses
+their validation and model-building rules, then builds the complete graph from
+fresh Kubernetes objects and durable bindings after it acquires the Gateway
+lock. Reconcilers do not hand fragments through process memory and do not issue
+OpenStack mutations independently.
 
 A coordinator shared by the controller process and keyed by Gateway UID can
 prevent two active workers from mutating the same graph at once. Correctness
@@ -286,11 +289,14 @@ still comes from the desired graph and OpenStack observation, so restart and
 leader change require no lock recovery. Leader election is required for
 multiple controller replicas.
 
-The current implementation has that keyed coordinator, but Gateway and
-HTTPRoute reconciliation still call separate provider operations. Serialization
-prevents overlapping mutation; it does not make those paths one complete graph
-writer. The writer and route fragment contract require an accepted ADR before
-the target in this section is considered implemented.
+The current implementation has that keyed coordinator in
+`internal/controller/graph`, but Gateway and HTTPRoute reconciliation still
+call separate provider operations. `internal/cloud/openstack/graph` organizes
+those existing provider operations behind the OpenStack facade. Neither
+package is the complete graph writer. Serialization prevents overlapping
+mutation; it does not make the two paths one writer. [ADR
+0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route
+fragment contract. It is not accepted or implemented yet.
 
 ### Asynchronous OpenStack operations
 
@@ -310,8 +316,8 @@ again before acting.
 Manager setup indexes GatewayClass ownership, parent Gateway references,
 backend Services, cleanup bindings, and the Service associated with each
 EndpointSlice. Watch handlers use those indexes instead of listing every object
-in the cluster. The current Node mapper starts with every indexed Route that has
-a Service backend, then resolves the affected set. The target is narrower
+in the cluster. The current Node mapper starts with every indexed HTTPRoute that
+has a Service backend, then resolves the affected set. The target is narrower
 fan-out to affected managed NodePort backends, with scale tests that count reads
 and effective reconciles.
 
@@ -336,28 +342,34 @@ documented in the roadmap and `docs/getting-started.md`.
   when conformance results support them.
 - Prevent deletion while managed Gateways use the class.
 
-### Gateway reconciler and graph writer
+### Gateway reconciler
 
 - Validate the class binding, addresses, and listeners.
-- Collect attached route fragments.
+- Write Gateway and listener conditions and `attachedRoutes`.
+- Finalize only the validated graph recorded by its durable binding.
+
+### Gateway graph writer
+
+- Collect the fresh Gateway and HTTPRoute inputs after acquiring the graph
+  lock.
 - Compile the complete load balancer graph from cloud abstraction types rather
   than Gophercloud types.
 - Reconcile the load balancer, address, listeners, and ordered route resources.
-- Write Gateway and listener conditions and `attachedRoutes`.
-- Finalize the graph only after validating its identity.
+- Return component results to the reconcilers without patching Kubernetes
+  objects.
 
 ### HTTPRoute reconciler
 
 - Evaluate parent attachment and `allowedRoutes`.
 - Resolve Service references and future ReferenceGrant authorization.
 - Validate matches, filters, and backends.
-- Produce a deterministic desired fragment for each accepted parent.
+- Provide deterministic model-building rules that the graph writer can reuse.
 - Write only this controller's parent status entries.
 - Watch every Service, EndpointSlice, Node, grant, or future policy that can
   change the fragment.
 
-Support for multiple routes needs an ADR that defines how route reconcilers pass
-fragments to the graph writer.
+Support for multiple routes needs an ADR that defines fragment ownership,
+selection, and ordering in the complete graph.
 
 ## Backend connectivity
 
@@ -606,8 +618,8 @@ controller's Gateway graph.
 The [ADR index and process](adr/README.md) tracks accepted decisions. The list
 below is a backlog, not an implicit decision.
 
-The following require public ADRs before their associated feature is declared
-stable:
+The following require accepted public ADRs before implementation changes the
+associated public or safety contract:
 
 - canonical controller name, module and repository ownership, artifact
   registry, project API domain, and migration from existing controller-derived

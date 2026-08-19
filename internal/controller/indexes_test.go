@@ -65,15 +65,15 @@ func TestSetupIndexes(t *testing.T) {
 	}
 
 	wantTypes := map[string]client.Object{
-		indexGatewayClassByController:   &gatewayv1.GatewayClass{},
-		indexGatewayByClass:             &gatewayv1.Gateway{},
-		indexHTTPRouteByParentGateway:   &gatewayv1.HTTPRoute{},
-		indexHTTPRouteByStatusGateway:   &gatewayv1.HTTPRoute{},
-		indexHTTPRouteByBackendService:  &gatewayv1.HTTPRoute{},
-		indexHTTPRouteByBoundGateway:    &gatewayv1.HTTPRoute{},
+		IndexGatewayClassByController:   &gatewayv1.GatewayClass{},
+		IndexGatewayByClass:             &gatewayv1.Gateway{},
+		IndexHTTPRouteByParentGateway:   &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByStatusGateway:   &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByBackendService:  &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByBoundGateway:    &gatewayv1.HTTPRoute{},
 		indexHTTPRouteByBoundGatewayUID: &gatewayv1.HTTPRoute{},
-		indexHTTPRouteByNodeBackend:     &gatewayv1.HTTPRoute{},
-		indexEndpointSliceByService:     &discoveryv1.EndpointSlice{},
+		IndexHTTPRouteByNodeBackend:     &gatewayv1.HTTPRoute{},
+		IndexEndpointSliceByService:     &discoveryv1.EndpointSlice{},
 	}
 	if len(indexer.indexes) != len(wantTypes) {
 		t.Fatalf("registered indexes = %d, want %d", len(indexer.indexes), len(wantTypes))
@@ -90,24 +90,24 @@ func TestSetupIndexes(t *testing.T) {
 	}
 
 	gatewayClass := &gatewayv1.GatewayClass{Spec: gatewayv1.GatewayClassSpec{ControllerName: config.ControllerName}}
-	assertIndexValues(t, indexer, indexGatewayClassByController, gatewayClass, []string{string(config.ControllerName)})
+	assertIndexValues(t, indexer, IndexGatewayClassByController, gatewayClass, []string{string(config.ControllerName)})
 
 	gateway := &gatewayv1.Gateway{Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack"}}
-	assertIndexValues(t, indexer, indexGatewayByClass, gateway, []string{"openstack"})
+	assertIndexValues(t, indexer, IndexGatewayByClass, gateway, []string{"openstack"})
 
 	route := indexedTestHTTPRoute(config)
-	assertIndexValues(t, indexer, indexHTTPRouteByParentGateway, route, []string{"gateways/edge", "routes/z-gateway"})
-	assertIndexValues(t, indexer, indexHTTPRouteByStatusGateway, route, []string{"gateways/edge", "routes/status-gateway"})
-	assertIndexValues(t, indexer, indexHTTPRouteByBackendService, route, []string{"apps/a-service", "routes/z-service"})
-	assertIndexValues(t, indexer, indexHTTPRouteByBoundGateway, route, []string{"gateways/edge"})
+	assertIndexValues(t, indexer, IndexHTTPRouteByParentGateway, route, []string{"gateways/edge", "routes/z-gateway"})
+	assertIndexValues(t, indexer, IndexHTTPRouteByStatusGateway, route, []string{"gateways/edge", "routes/status-gateway"})
+	assertIndexValues(t, indexer, IndexHTTPRouteByBackendService, route, []string{"apps/a-service", "routes/z-service"})
+	assertIndexValues(t, indexer, IndexHTTPRouteByBoundGateway, route, []string{"gateways/edge"})
 	assertIndexValues(t, indexer, indexHTTPRouteByBoundGatewayUID, route, []string{"gateway-uid"})
-	assertIndexValues(t, indexer, indexHTTPRouteByNodeBackend, route, []string{nodeBackendIndexValue})
+	assertIndexValues(t, indexer, IndexHTTPRouteByNodeBackend, route, []string{NodeBackendIndexValue})
 
 	endpointSlice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "apps",
 		Labels:    map[string]string{discoveryv1.LabelServiceName: "a-service"},
 	}}
-	assertIndexValues(t, indexer, indexEndpointSliceByService, endpointSlice, []string{"apps/a-service"})
+	assertIndexValues(t, indexer, IndexEndpointSliceByService, endpointSlice, []string{"apps/a-service"})
 }
 
 func TestSetupIndexesReturnsRegistrationError(t *testing.T) {
@@ -115,7 +115,7 @@ func TestSetupIndexesReturnsRegistrationError(t *testing.T) {
 
 	wantErr := errors.New("index unavailable")
 	indexer := &recordingFieldIndexer{
-		failField: indexHTTPRouteByBackendService,
+		failField: IndexHTTPRouteByBackendService,
 		failErr:   wantErr,
 	}
 	err := SetupIndexes(context.Background(), indexer, testConfig())
@@ -145,8 +145,8 @@ func TestParentGatewayKeys(t *testing.T) {
 	}
 
 	want := []string{"gateways/edge", "routes/z-gateway"}
-	if got := parentGatewayKeys(route); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parentGatewayKeys() = %#v, want %#v", got, want)
+	if got := ParentGatewayKeys(route); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParentGatewayKeys() = %#v, want %#v", got, want)
 	}
 }
 
@@ -194,15 +194,15 @@ func TestBoundGatewayKeyRequiresCompleteStoredIdentity(t *testing.T) {
 
 	config := testConfig()
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-		config.routeGatewayNamespaceAnnotation(): "gateways",
-		config.routeGatewayNameAnnotation():      "edge",
-		config.routeGatewayUIDAnnotation():       "gateway-uid",
+		config.RouteGatewayNamespaceAnnotation(): "gateways",
+		config.RouteGatewayNameAnnotation():      "edge",
+		config.RouteGatewayUIDAnnotation():       "gateway-uid",
 	}}}
 	if got, want := boundGatewayKey(config, route), "gateways/edge"; got != want {
 		t.Fatalf("boundGatewayKey() = %q, want %q", got, want)
 	}
 
-	delete(route.Annotations, config.routeGatewayUIDAnnotation())
+	delete(route.Annotations, config.RouteGatewayUIDAnnotation())
 	if got := boundGatewayKey(config, route); got != "" {
 		t.Fatalf("boundGatewayKey() with incomplete identity = %q, want empty", got)
 	}
@@ -217,14 +217,14 @@ func TestIndexesOmitObjectsWithoutUsableKeys(t *testing.T) {
 		t.Fatalf("SetupIndexes() error = %v", err)
 	}
 
-	assertIndexValues(t, indexer, indexGatewayByClass, &gatewayv1.Gateway{}, nil)
-	assertIndexValues(t, indexer, indexHTTPRouteByParentGateway, &gatewayv1.HTTPRoute{}, nil)
-	assertIndexValues(t, indexer, indexHTTPRouteByStatusGateway, &gatewayv1.HTTPRoute{}, nil)
-	assertIndexValues(t, indexer, indexHTTPRouteByBackendService, &gatewayv1.HTTPRoute{}, nil)
-	assertIndexValues(t, indexer, indexHTTPRouteByBoundGateway, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexGatewayByClass, &gatewayv1.Gateway{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByParentGateway, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByStatusGateway, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByBackendService, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByBoundGateway, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, indexHTTPRouteByBoundGatewayUID, &gatewayv1.HTTPRoute{}, nil)
-	assertIndexValues(t, indexer, indexHTTPRouteByNodeBackend, &gatewayv1.HTTPRoute{}, nil)
-	assertIndexValues(t, indexer, indexEndpointSliceByService, &discoveryv1.EndpointSlice{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByNodeBackend, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexEndpointSliceByService, &discoveryv1.EndpointSlice{}, nil)
 
 	externalGroup := gatewayv1.Group("example.com")
 	externalBackendRoute := &gatewayv1.HTTPRoute{Spec: gatewayv1.HTTPRouteSpec{
@@ -235,7 +235,7 @@ func TestIndexesOmitObjectsWithoutUsableKeys(t *testing.T) {
 			}},
 		}}}},
 	}}
-	assertIndexValues(t, indexer, indexHTTPRouteByNodeBackend, externalBackendRoute, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByNodeBackend, externalBackendRoute, nil)
 }
 
 func indexedTestHTTPRoute(config Config) *gatewayv1.HTTPRoute {
@@ -249,9 +249,9 @@ func indexedTestHTTPRoute(config Config) *gatewayv1.HTTPRoute {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "routes",
 			Annotations: map[string]string{
-				config.routeGatewayNamespaceAnnotation(): "gateways",
-				config.routeGatewayNameAnnotation():      "edge",
-				config.routeGatewayUIDAnnotation():       "gateway-uid",
+				config.RouteGatewayNamespaceAnnotation(): "gateways",
+				config.RouteGatewayNameAnnotation():      "edge",
+				config.RouteGatewayUIDAnnotation():       "gateway-uid",
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{

@@ -40,35 +40,47 @@ var requiredGatewayAPICRDs = []string{
 }
 
 const (
-	unsupportedGatewayAPIVersionMessage = "GatewayClass does not support the installed Gateway API CRD version"
+	// UnsupportedGatewayAPIVersionMessage is the stable status message used
+	// when the installed Gateway API CRDs do not match the supported bundle.
+	UnsupportedGatewayAPIVersionMessage = "GatewayClass does not support the installed Gateway API CRD version"
 	gatewayAPIExperimentalGroup         = "gateway.networking.x-k8s.io"
 	gatewayAPIVersionRequeue            = time.Minute
 )
 
-func gatewayAPIVersionRequeueAfter(uid types.UID) time.Duration {
+// GatewayAPIVersionRequeueAfter returns the stable, jittered retry interval for
+// checking the installed Gateway API bundle again.
+func GatewayAPIVersionRequeueAfter(uid types.UID) time.Duration {
 	return stableJitter(gatewayAPIVersionRequeue, string(uid)+"/gateway-api-version")
 }
 
-var errUnsupportedGatewayAPIVersion = errors.New("installed Gateway API CRD version is unsupported")
+// ErrUnsupportedGatewayAPIVersion indicates that the installed Gateway API
+// CRDs do not match the bundle supported by this controller.
+var ErrUnsupportedGatewayAPIVersion = errors.New("installed Gateway API CRD version is unsupported")
 
-type gatewayAPIVersionObservation struct {
-	supported bool
-	message   string
+// GatewayAPIVersionObservation describes the compatibility of the installed
+// Gateway API CRD bundle.
+type GatewayAPIVersionObservation struct {
+	// Supported reports whether every required CRD uses the supported bundle.
+	Supported bool
+	// Message summarizes the observed bundle state for status reporting.
+	Message string
 }
 
-func observeGatewayAPIVersion(ctx context.Context, reader client.Reader) (gatewayAPIVersionObservation, error) {
+// ObserveGatewayAPIVersion reads Gateway API CRD metadata and evaluates the
+// installed bundle version.
+func ObserveGatewayAPIVersion(ctx context.Context, reader client.Reader) (GatewayAPIVersionObservation, error) {
 	var definitions metav1.PartialObjectMetadataList
 	definitions.SetGroupVersionKind(
 		apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinitionList"),
 	)
 	if err := reader.List(ctx, &definitions); err != nil {
-		return gatewayAPIVersionObservation{}, fmt.Errorf("list Gateway API custom resource definitions: %w", err)
+		return GatewayAPIVersionObservation{}, fmt.Errorf("list Gateway API custom resource definitions: %w", err)
 	}
 
 	present := make(map[string]struct{})
 	issues := make([]string, 0)
 	for _, definition := range definitions.Items {
-		if !isGatewayAPICRDName(definition.Name) {
+		if !IsGatewayAPICRDName(definition.Name) {
 			continue
 		}
 		present[definition.Name] = struct{}{}
@@ -91,14 +103,14 @@ func observeGatewayAPIVersion(ctx context.Context, reader client.Reader) (gatewa
 	}
 
 	if len(issues) == 0 {
-		return gatewayAPIVersionObservation{
-			supported: true,
-			message:   fmt.Sprintf("Installed Gateway API CRDs use supported bundle version %s", gatewayconsts.BundleVersion),
+		return GatewayAPIVersionObservation{
+			Supported: true,
+			Message:   fmt.Sprintf("Installed Gateway API CRDs use supported bundle version %s", gatewayconsts.BundleVersion),
 		}, nil
 	}
 	sort.Strings(issues)
-	return gatewayAPIVersionObservation{
-		message: fmt.Sprintf(
+	return GatewayAPIVersionObservation{
+		Message: fmt.Sprintf(
 			"Installed Gateway API CRDs do not match supported bundle version %s: %s",
 			gatewayconsts.BundleVersion,
 			strings.Join(issues, ", "),
@@ -106,7 +118,9 @@ func observeGatewayAPIVersion(ctx context.Context, reader client.Reader) (gatewa
 	}, nil
 }
 
-func isGatewayAPICRDName(name string) bool {
+// IsGatewayAPICRDName reports whether a CRD name belongs to a Gateway API
+// group.
+func IsGatewayAPICRDName(name string) bool {
 	resource, group, found := strings.Cut(name, ".")
 	return found && resource != "" && isGatewayAPIGroup(group)
 }
@@ -115,7 +129,9 @@ func isGatewayAPIGroup(group string) bool {
 	return group == gatewayv1.GroupName || group == gatewayAPIExperimentalGroup
 }
 
-func gatewayClassSupportsInstalledVersion(gatewayClass *gatewayv1.GatewayClass) bool {
+// GatewayClassSupportsInstalledVersion reports whether the GatewayClass has a
+// current SupportedVersion=True condition.
+func GatewayClassSupportsInstalledVersion(gatewayClass *gatewayv1.GatewayClass) bool {
 	condition := meta.FindStatusCondition(
 		gatewayClass.Status.Conditions,
 		string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
@@ -124,16 +140,18 @@ func gatewayClassSupportsInstalledVersion(gatewayClass *gatewayv1.GatewayClass) 
 		condition.ObservedGeneration == gatewayClass.Generation
 }
 
-func validateInstalledGatewayAPIVersion(ctx context.Context, reader client.Reader) error {
+// ValidateInstalledGatewayAPIVersion returns an error unless a live read shows
+// a supported Gateway API CRD bundle.
+func ValidateInstalledGatewayAPIVersion(ctx context.Context, reader client.Reader) error {
 	if reader == nil {
-		return errAPIReaderRequired
+		return ErrAPIReaderRequired
 	}
-	observation, err := observeGatewayAPIVersion(ctx, reader)
+	observation, err := ObserveGatewayAPIVersion(ctx, reader)
 	if err != nil {
 		return err
 	}
-	if !observation.supported {
-		return errUnsupportedGatewayAPIVersion
+	if !observation.Supported {
+		return ErrUnsupportedGatewayAPIVersion
 	}
 	return nil
 }

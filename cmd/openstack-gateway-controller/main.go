@@ -41,6 +41,10 @@ import (
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/graph"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/httproute"
 )
 
 // version is overridden at build time with -X main.version=<release>.
@@ -181,12 +185,12 @@ func run(ctx context.Context) error {
 	if err := controller.SetupIndexes(ctx, manager.GetFieldIndexer(), controllerConfig); err != nil {
 		return fmt.Errorf("set up controller field indexes: %w", err)
 	}
-	graphCoordinator := &controller.GraphCoordinator{}
+	graphCoordinator := &graph.Coordinator{}
 	eventRecorder := manager.GetEventRecorder("gateway-api-openstack-controller")
-	if err := (&controller.GatewayClassReconciler{Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
+	if err := (&gatewayclass.Reconciler{Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up GatewayClass controller: %w", err)
 	}
-	gatewayReconciler := &controller.GatewayReconciler{
+	gatewayReconciler := &gateway.Reconciler{
 		Client:      manager.GetClient(),
 		Provider:    openStackProvider,
 		Coordinator: graphCoordinator,
@@ -197,7 +201,7 @@ func run(ctx context.Context) error {
 	if err := gatewayReconciler.SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up Gateway controller: %w", err)
 	}
-	routeReconciler := &controller.HTTPRouteReconciler{
+	routeReconciler := &httproute.Reconciler{
 		Client:      manager.GetClient(),
 		Provider:    openStackProvider,
 		Coordinator: graphCoordinator,

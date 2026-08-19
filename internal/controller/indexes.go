@@ -28,16 +28,26 @@ import (
 )
 
 const (
-	indexGatewayClassByController   = "spec.controllerName"
-	indexGatewayByClass             = "spec.gatewayClassName"
-	indexHTTPRouteByParentGateway   = "spec.parentGateway"
-	indexHTTPRouteByStatusGateway   = "status.parentGateway"
-	indexHTTPRouteByBackendService  = "spec.backendService"
-	indexHTTPRouteByBoundGateway    = "metadata.boundGateway"
+	// IndexGatewayClassByController indexes GatewayClasses by controller name.
+	IndexGatewayClassByController = "spec.controllerName"
+	// IndexGatewayByClass indexes Gateways by GatewayClass name.
+	IndexGatewayByClass = "spec.gatewayClassName"
+	// IndexHTTPRouteByParentGateway indexes HTTPRoutes by parent Gateway key.
+	IndexHTTPRouteByParentGateway = "spec.parentGateway"
+	// IndexHTTPRouteByStatusGateway indexes HTTPRoutes by status parent Gateway key.
+	IndexHTTPRouteByStatusGateway = "status.parentGateway"
+	// IndexHTTPRouteByBackendService indexes HTTPRoutes by backend Service key.
+	IndexHTTPRouteByBackendService = "spec.backendService"
+	// IndexHTTPRouteByBoundGateway indexes HTTPRoutes by bound Gateway key.
+	IndexHTTPRouteByBoundGateway = "metadata.boundGateway"
+	// indexHTTPRouteByBoundGatewayUID indexes HTTPRoutes by bound Gateway UID.
 	indexHTTPRouteByBoundGatewayUID = "metadata.boundGatewayUID"
-	indexHTTPRouteByNodeBackend     = "spec.nodeBackend"
-	indexEndpointSliceByService     = "metadata.service"
-	nodeBackendIndexValue           = "true"
+	// IndexHTTPRouteByNodeBackend indexes routes that use Node backends.
+	IndexHTTPRouteByNodeBackend = "spec.nodeBackend"
+	// IndexEndpointSliceByService indexes EndpointSlices by Service key.
+	IndexEndpointSliceByService = "metadata.service"
+	// NodeBackendIndexValue is the field value for routes that use Node backends.
+	NodeBackendIndexValue = "true"
 )
 
 type controllerFieldIndex struct {
@@ -61,7 +71,7 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 	return []controllerFieldIndex{
 		{
 			object: &gatewayv1.GatewayClass{},
-			field:  indexGatewayClassByController,
+			field:  IndexGatewayClassByController,
 			extract: func(object client.Object) []string {
 				gatewayClass, ok := object.(*gatewayv1.GatewayClass)
 				if !ok || gatewayClass.Spec.ControllerName == "" {
@@ -72,7 +82,7 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 		},
 		{
 			object: &gatewayv1.Gateway{},
-			field:  indexGatewayByClass,
+			field:  IndexGatewayByClass,
 			extract: func(object client.Object) []string {
 				gateway, ok := object.(*gatewayv1.Gateway)
 				if !ok || gateway.Spec.GatewayClassName == "" {
@@ -83,18 +93,18 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByParentGateway,
+			field:  IndexHTTPRouteByParentGateway,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
 				if !ok {
 					return nil
 				}
-				return parentGatewayKeys(route)
+				return ParentGatewayKeys(route)
 			},
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByStatusGateway,
+			field:  IndexHTTPRouteByStatusGateway,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
 				if !ok {
@@ -105,7 +115,7 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByBackendService,
+			field:  IndexHTTPRouteByBackendService,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
 				if !ok {
@@ -116,7 +126,7 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByBoundGateway,
+			field:  IndexHTTPRouteByBoundGateway,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
 				if !ok {
@@ -137,23 +147,23 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 				if !ok || boundGatewayKey(config, route) == "" {
 					return nil
 				}
-				return []string{route.Annotations[config.routeGatewayUIDAnnotation()]}
+				return []string{route.Annotations[config.RouteGatewayUIDAnnotation()]}
 			},
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByNodeBackend,
+			field:  IndexHTTPRouteByNodeBackend,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
 				if !ok || !hasCoreServiceBackend(route) {
 					return nil
 				}
-				return []string{nodeBackendIndexValue}
+				return []string{NodeBackendIndexValue}
 			},
 		},
 		{
 			object: &discoveryv1.EndpointSlice{},
-			field:  indexEndpointSliceByService,
+			field:  IndexEndpointSliceByService,
 			extract: func(object client.Object) []string {
 				endpointSlice, ok := object.(*discoveryv1.EndpointSlice)
 				if !ok {
@@ -163,7 +173,7 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 				if endpointSlice.Namespace == "" || serviceName == "" {
 					return nil
 				}
-				return []string{objectKeyString(types.NamespacedName{
+				return []string{ObjectKeyString(types.NamespacedName{
 					Namespace: endpointSlice.Namespace,
 					Name:      serviceName,
 				})}
@@ -172,14 +182,18 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 	}
 }
 
-func objectKeyString(key types.NamespacedName) string {
+// ObjectKeyString returns the stable namespace and name representation used by
+// field indexes.
+func ObjectKeyString(key types.NamespacedName) string {
 	return key.String()
 }
 
-func parentGatewayKeys(route *gatewayv1.HTTPRoute) []string {
+// ParentGatewayKeys returns the distinct Gateway keys referenced by an
+// HTTPRoute, in deterministic order.
+func ParentGatewayKeys(route *gatewayv1.HTTPRoute) []string {
 	keys := make(map[string]struct{}, len(route.Spec.ParentRefs))
 	for _, parent := range route.Spec.ParentRefs {
-		if !isGatewayParentRef(parent) || parent.Name == "" {
+		if !IsGatewayParentRef(parent) || parent.Name == "" {
 			continue
 		}
 		namespace := route.Namespace
@@ -189,7 +203,7 @@ func parentGatewayKeys(route *gatewayv1.HTTPRoute) []string {
 		if namespace == "" {
 			continue
 		}
-		keys[objectKeyString(types.NamespacedName{
+		keys[ObjectKeyString(types.NamespacedName{
 			Namespace: namespace,
 			Name:      string(parent.Name),
 		})] = struct{}{}
@@ -200,7 +214,7 @@ func parentGatewayKeys(route *gatewayv1.HTTPRoute) []string {
 func statusParentGatewayKeys(config Config, route *gatewayv1.HTTPRoute) []string {
 	keys := make(map[string]struct{}, len(route.Status.Parents))
 	for _, parent := range route.Status.Parents {
-		if parent.ControllerName != config.ControllerName || !isGatewayParentRef(parent.ParentRef) || parent.ParentRef.Name == "" {
+		if parent.ControllerName != config.ControllerName || !IsGatewayParentRef(parent.ParentRef) || parent.ParentRef.Name == "" {
 			continue
 		}
 		namespace := route.Namespace
@@ -210,7 +224,7 @@ func statusParentGatewayKeys(config Config, route *gatewayv1.HTTPRoute) []string
 		if namespace == "" {
 			continue
 		}
-		keys[objectKeyString(types.NamespacedName{
+		keys[ObjectKeyString(types.NamespacedName{
 			Namespace: namespace,
 			Name:      string(parent.ParentRef.Name),
 		})] = struct{}{}
@@ -232,7 +246,7 @@ func backendServiceKeys(route *gatewayv1.HTTPRoute) []string {
 			if namespace == "" {
 				continue
 			}
-			keys[objectKeyString(types.NamespacedName{
+			keys[ObjectKeyString(types.NamespacedName{
 				Namespace: namespace,
 				Name:      string(backend.Name),
 			})] = struct{}{}
@@ -259,13 +273,13 @@ func hasCoreServiceBackend(route *gatewayv1.HTTPRoute) bool {
 
 func boundGatewayKey(config Config, route *gatewayv1.HTTPRoute) string {
 	annotations := route.GetAnnotations()
-	namespace := annotations[config.routeGatewayNamespaceAnnotation()]
-	name := annotations[config.routeGatewayNameAnnotation()]
-	uid := annotations[config.routeGatewayUIDAnnotation()]
+	namespace := annotations[config.RouteGatewayNamespaceAnnotation()]
+	name := annotations[config.RouteGatewayNameAnnotation()]
+	uid := annotations[config.RouteGatewayUIDAnnotation()]
 	if namespace == "" || name == "" || uid == "" {
 		return ""
 	}
-	return objectKeyString(types.NamespacedName{Namespace: namespace, Name: name})
+	return ObjectKeyString(types.NamespacedName{Namespace: namespace, Name: name})
 }
 
 func sortedIndexKeys(keys map[string]struct{}) []string {

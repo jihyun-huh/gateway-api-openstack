@@ -22,7 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func condition(conditionType string, status metav1.ConditionStatus, reason, message string, generation int64) metav1.Condition {
+// Condition constructs a Kubernetes condition for the evaluated generation.
+func Condition(conditionType string, status metav1.ConditionStatus, reason, message string, generation int64) metav1.Condition {
 	return metav1.Condition{
 		Type:               conditionType,
 		Status:             status,
@@ -32,13 +33,15 @@ func condition(conditionType string, status metav1.ConditionStatus, reason, mess
 	}
 }
 
-func setCondition(conditions *[]metav1.Condition, value metav1.Condition) {
+// SetCondition adds or updates a condition while preserving its transition
+// time when the state has not changed.
+func SetCondition(conditions *[]metav1.Condition, value metav1.Condition) {
 	meta.SetStatusCondition(conditions, value)
 }
 
-// optimisticMergeFrom creates a merge patch that also asserts the object's
+// OptimisticMergeFrom creates a merge patch that also asserts the object's
 // resourceVersion. A conflict causes reconciliation to retry from a fresh
 // object instead of applying a decision made from stale state.
-func optimisticMergeFrom(base client.Object) client.Patch {
+func OptimisticMergeFrom(base client.Object) client.Patch {
 	return client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 }

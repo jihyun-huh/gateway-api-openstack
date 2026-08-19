@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package controller_test
 
 import (
 	"context"
@@ -24,6 +24,10 @@ import (
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
+	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/httproute"
 )
 
 func TestReconcilersKeepRequestStateLocal(t *testing.T) {
@@ -35,9 +39,9 @@ func TestReconcilersKeepRequestStateLocal(t *testing.T) {
 	objectType := reflect.TypeOf((*client.Object)(nil)).Elem()
 
 	for name, reconciler := range map[string]any{
-		"GatewayClassReconciler": GatewayClassReconciler{},
-		"GatewayReconciler":      GatewayReconciler{},
-		"HTTPRouteReconciler":    HTTPRouteReconciler{},
+		"gatewayclass.Reconciler": gatewayclass.Reconciler{},
+		"gateway.Reconciler":      gateway.Reconciler{},
+		"httproute.Reconciler":    httproute.Reconciler{},
 	} {
 		reconcilerType := reflect.TypeOf(reconciler)
 		for index := range reconcilerType.NumField() {
