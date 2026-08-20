@@ -18,15 +18,10 @@ package httproute
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,112 +31,61 @@ import (
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
-	gatewaycontroller "github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
 )
 
 func (r *Reconciler) bindRoute(ctx context.Context, route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway) (bool, error) {
 	if r.APIReader == nil {
 		return false, controller.ErrAPIReaderRequired
 	}
-	routeKey := client.ObjectKeyFromObject(route)
-	routeUID, generation, isDeleting := route.UID, route.Generation, !route.DeletionTimestamp.IsZero()
+	snapshot, err := r.buildRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForBinding)
+	if err != nil {
+		return false, err
+	}
+	return r.bindRouteFromSnapshot(ctx, route, gateway, snapshot)
+}
+
+// bindRouteFromSnapshot uses the model already built while holding the
+// Gateway graph lock. A conflict retry rebuilds the snapshot because the
+// original observation is no longer current.
+func (r *Reconciler) bindRouteFromSnapshot(
+	ctx context.Context,
+	route *gatewayv1.HTTPRoute,
+	gateway *gatewayv1.Gateway,
+	initial routeValidationSnapshot,
+) (bool, error) {
 	bindingStored := false
+	snapshot := initial
+	firstAttempt := true
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		current := &gatewayv1.HTTPRoute{}
-		if err := r.APIReader.Get(ctx, routeKey, current); err != nil {
-			return errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
+		if firstAttempt {
+			firstAttempt = false
+		} else {
+			refreshed, err := r.buildRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForBinding)
+			if err != nil {
+				return err
+			}
+			snapshot = refreshed
 		}
-		if !sameHTTPRouteRevision(current, routeUID, generation, isDeleting) {
-			return errHTTPRouteChanged
-		}
-		var liveGateway gatewayv1.Gateway
-		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(gateway), &liveGateway); err != nil {
-			return errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-		}
-		if liveGateway.UID != gateway.UID || liveGateway.Generation != gateway.Generation ||
-			!liveGateway.DeletionTimestamp.IsZero() {
-			return errHTTPRouteChanged
-		}
-		var gatewayClass gatewayv1.GatewayClass
-		if err := r.APIReader.Get(
-			ctx,
-			types.NamespacedName{Name: string(liveGateway.Spec.GatewayClassName)},
-			&gatewayClass,
-		); err != nil {
-			return errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-		}
-		if gatewayClass.Spec.ControllerName != r.Config.ControllerName || gatewayClass.Spec.ParametersRef != nil {
-			return errHTTPRouteChanged
-		}
-		if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
-			return controller.ErrUnsupportedGatewayAPIVersion
-		}
-		if !controllerutil.ContainsFinalizer(&liveGateway, r.Config.GatewayFinalizer()) ||
-			controller.ValidateGatewayBinding(r.Config, &liveGateway) != nil {
-			return errHTTPRouteChanged
-		}
-		listener, validationErr := gatewaycontroller.Validate(&liveGateway)
-		if validationErr != nil || len(current.Spec.ParentRefs) != 1 {
-			return errHTTPRouteChanged
-		}
-		parent := managedRouteParent{
-			ref: current.Spec.ParentRefs[0], gateway: &liveGateway,
-			gatewayClass: &gatewayClass, listener: listener,
-		}
-		if validateRouteParent(current, parent) != nil ||
-			liveGateway.Annotations[r.Config.GatewayListenerPortAnnotation()] != strconv.Itoa(int(listener.Port)) {
-			return errHTTPRouteChanged
-		}
-		programmed := meta.FindStatusCondition(
-			liveGateway.Status.Conditions,
-			string(gatewayv1.GatewayConditionProgrammed),
-		)
-		if programmed == nil || programmed.Status != metav1.ConditionTrue ||
-			programmed.ObservedGeneration != liveGateway.Generation {
-			return errHTTPRouteChanged
-		}
-		if !structurallySupportedRoute(current) {
-			return errHTTPRouteChanged
-		}
-		decision, err := r.evaluateRouteSlotWithReader(ctx, r.APIReader, current)
-		if err != nil || !decision.canReserve {
-			return errors.Join(errHTTPRouteChanged, err)
-		}
-		selected, err := r.isSelectedRouteWithReader(ctx, r.APIReader, current, parent, false)
-		if err != nil || !selected {
-			return errors.Join(errHTTPRouteChanged, err)
-		}
-		if _, err := r.buildRouteSpecWithReader(ctx, r.APIReader, current, &liveGateway); err != nil {
-			return errors.Join(errHTTPRouteChanged, err)
-		}
-		desired := controller.RouteIdentity(r.Config, &liveGateway, current)
-
-		stored, present, err := r.storedRouteIdentity(current)
-		if err != nil {
+		if err := r.validateRouteBindingTransition(snapshot); err != nil {
 			return err
 		}
-		if !present && controllerutil.ContainsFinalizer(current, r.Config.RouteFinalizer()) {
-			return fmt.Errorf("HTTPRoute %s has the controller finalizer but no complete stored Gateway identity", routeKey)
-		}
-		if present && !controller.SameGatewayIdentity(stored, desired) {
-			return errHTTPRouteChanged
-		}
-		if err := r.validateRouteMutationOwnership(ctx, current, &liveGateway, false); err != nil {
+		if err := r.sealRouteMutationSnapshot(ctx, snapshot, routeBindingOptional); err != nil {
 			return err
 		}
 
-		base := current.DeepCopy()
-		r.applyRouteBinding(current, &liveGateway)
-		if routeBindingMetadataEqual(base, current) {
-			*route = *current
+		base := snapshot.route.DeepCopy()
+		desired := snapshot.route.DeepCopy()
+		r.applyRouteBinding(desired, snapshot.gateway)
+		if routeBindingMetadataEqual(base, desired) {
+			*route = *desired
 			return nil
 		}
-		if err := r.Patch(ctx, current, controller.OptimisticMergeFrom(base)); err != nil {
+		if err := r.Patch(ctx, desired, controller.OptimisticMergeFrom(base)); err != nil {
 			return err
 		}
 		bindingStored = true
-		*route = *current
-		log.FromContext(ctx).V(1).Info("Bound HTTPRoute to Gateway", "gateway", client.ObjectKeyFromObject(&liveGateway))
+		*route = *desired
+		log.FromContext(ctx).V(1).Info("Bound HTTPRoute to Gateway", "gateway", client.ObjectKeyFromObject(snapshot.gateway))
 		return nil
 	})
 	return bindingStored, err

@@ -21,11 +21,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/monitors"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
@@ -149,8 +145,7 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 			return cloud.Outcome{}, fmt.Errorf("%w: Floating IP %s", cloud.ErrOwnershipConflict, floatingIP.ID)
 		}
 	}
-	if len(deletionPlan) != 0 {
-		step := deletionPlan[0]
+	if step, ok := deletionPlan.firstStep(); ok {
 		if err := p.executeGatewayDeletionStep(ctx, step); err != nil {
 			return cloud.Outcome{}, err
 		}
@@ -167,206 +162,6 @@ func (p *Provider) DeleteGateway(ctx context.Context, cloudIdentity cloud.Identi
 		return cloud.Outcome{}, fmt.Errorf("delete load balancer %s without cascade: %w", managedLoadBalancer.ID, classifyOctaviaMutationError(err))
 	}
 	return p.progressingOutcome("Deleting Octavia load balancer"), nil
-}
-
-type gatewayDeletionResource string
-
-const (
-	gatewayDeletionL7Rule   gatewayDeletionResource = "L7 rule"
-	gatewayDeletionL7Policy gatewayDeletionResource = "L7 policy"
-	gatewayDeletionListener gatewayDeletionResource = "listener"
-	gatewayDeletionMonitor  gatewayDeletionResource = "health monitor"
-	gatewayDeletionMember   gatewayDeletionResource = "member"
-	gatewayDeletionPool     gatewayDeletionResource = "pool"
-)
-
-type gatewayDeletionStep struct {
-	resource   gatewayDeletionResource
-	resourceID string
-	parentID   string
-}
-
-type gatewayDeletionPlan []gatewayDeletionStep
-
-func (p gatewayDeletionPlan) hasRouteResources() bool {
-	for _, step := range p {
-		switch step.resource {
-		case gatewayDeletionL7Rule,
-			gatewayDeletionL7Policy,
-			gatewayDeletionMonitor,
-			gatewayDeletionMember,
-			gatewayDeletionPool:
-			return true
-		case gatewayDeletionListener:
-		}
-	}
-	return false
-}
-
-// buildGatewayDeletionPlan validates the complete load balancer graph before
-// returning any work. Steps are ordered so every child is deleted before its
-// parent; callers can therefore execute the plan linearly and safely retry it.
-func (p *Provider) buildGatewayDeletionPlan(ctx context.Context, identity Identity, loadBalancerID string) (gatewayDeletionPlan, error) {
-	plan := gatewayDeletionPlan{}
-	listenerSteps := gatewayDeletionPlan{}
-	listenerList, err := p.octavia.ListListeners(ctx, listeners.ListOpts{
-		LoadbalancerID: loadBalancerID,
-		ProjectID:      p.projectID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list listeners before Gateway deletion: %w", err)
-	}
-	sort.Slice(listenerList, func(i, j int) bool { return listenerList[i].ID < listenerList[j].ID })
-	for _, listener := range listenerList {
-		if err := p.validateOptionalProject("listener", listener.ID, listener.ProjectID); err != nil {
-			return nil, err
-		}
-		if !identity.MatchesGateway(listener.Tags, roleListener) {
-			return nil, fmt.Errorf("%w: listener %s", cloud.ErrOwnershipConflict, listener.ID)
-		}
-		for _, parent := range listener.Loadbalancers {
-			if parent.ID != loadBalancerID {
-				return nil, fmt.Errorf("%w: listener %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, listener.ID, parent.ID, loadBalancerID)
-			}
-		}
-		policyList, err := p.octavia.ListPolicies(ctx, l7policies.ListOpts{
-			ListenerID: listener.ID,
-			ProjectID:  p.projectID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list L7 policies beneath listener %s before Gateway deletion: %w", listener.ID, err)
-		}
-		sort.Slice(policyList, func(i, j int) bool {
-			if policyList[i].Position == policyList[j].Position {
-				return policyList[i].ID < policyList[j].ID
-			}
-			return policyList[i].Position < policyList[j].Position
-		})
-		for _, policy := range policyList {
-			if err := p.validateOptionalProject("L7 policy", policy.ID, policy.ProjectID); err != nil {
-				return nil, err
-			}
-			if !matchesAnyGatewayRole(identity, policy.Tags, rolePolicyExact, rolePolicyPrefix) {
-				return nil, fmt.Errorf("%w: L7 policy %s", cloud.ErrOwnershipConflict, policy.ID)
-			}
-			if policy.ListenerID != "" && policy.ListenerID != listener.ID {
-				return nil, fmt.Errorf("%w: L7 policy %s reports listener %s instead of %s", cloud.ErrOwnershipConflict, policy.ID, policy.ListenerID, listener.ID)
-			}
-			ruleList, err := p.octavia.ListRules(ctx, policy.ID, l7policies.ListRulesOpts{
-				ProjectID: p.projectID,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("list L7 rules beneath policy %s before Gateway deletion: %w", policy.ID, err)
-			}
-			sort.Slice(ruleList, func(i, j int) bool { return ruleList[i].ID < ruleList[j].ID })
-			for _, rule := range ruleList {
-				if err := p.validateOptionalProject("L7 rule", rule.ID, rule.ProjectID); err != nil {
-					return nil, err
-				}
-				if !matchesAnyGatewayRole(identity, rule.Tags, roleRulePath, roleRuleHost) {
-					return nil, fmt.Errorf("%w: L7 rule %s", cloud.ErrOwnershipConflict, rule.ID)
-				}
-				plan = append(plan, gatewayDeletionStep{
-					resource:   gatewayDeletionL7Rule,
-					resourceID: rule.ID,
-					parentID:   policy.ID,
-				})
-			}
-			plan = append(plan, gatewayDeletionStep{
-				resource:   gatewayDeletionL7Policy,
-				resourceID: policy.ID,
-			})
-		}
-		listenerSteps = append(listenerSteps, gatewayDeletionStep{
-			resource:   gatewayDeletionListener,
-			resourceID: listener.ID,
-		})
-	}
-
-	poolList, err := p.octavia.ListPools(ctx, pools.ListOpts{
-		LoadbalancerID: loadBalancerID,
-		ProjectID:      p.projectID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list pools before Gateway deletion: %w", err)
-	}
-	sort.Slice(poolList, func(i, j int) bool { return poolList[i].ID < poolList[j].ID })
-	for _, pool := range poolList {
-		if err := p.validateOptionalProject("pool", pool.ID, pool.ProjectID); err != nil {
-			return nil, err
-		}
-		if !identity.MatchesGateway(pool.Tags, rolePool) {
-			return nil, fmt.Errorf("%w: pool %s", cloud.ErrOwnershipConflict, pool.ID)
-		}
-		for _, parent := range pool.Loadbalancers {
-			if parent.ID != loadBalancerID {
-				return nil, fmt.Errorf("%w: pool %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, pool.ID, parent.ID, loadBalancerID)
-			}
-		}
-		monitorList, err := p.octavia.ListMonitors(ctx, monitors.ListOpts{
-			PoolID:    pool.ID,
-			ProjectID: p.projectID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list health monitors beneath pool %s before Gateway deletion: %w", pool.ID, err)
-		}
-		sort.Slice(monitorList, func(i, j int) bool { return monitorList[i].ID < monitorList[j].ID })
-		for _, monitor := range monitorList {
-			if err := p.validateOptionalProject("health monitor", monitor.ID, monitor.ProjectID); err != nil {
-				return nil, err
-			}
-			if !identity.MatchesGateway(monitor.Tags, roleMonitor) {
-				return nil, fmt.Errorf("%w: monitor %s", cloud.ErrOwnershipConflict, monitor.ID)
-			}
-			for _, parent := range monitor.Pools {
-				if parent.ID != pool.ID {
-					return nil, fmt.Errorf("%w: health monitor %s reports pool %s instead of %s", cloud.ErrOwnershipConflict, monitor.ID, parent.ID, pool.ID)
-				}
-			}
-			plan = append(plan, gatewayDeletionStep{
-				resource:   gatewayDeletionMonitor,
-				resourceID: monitor.ID,
-				parentID:   pool.ID,
-			})
-		}
-		memberList, err := p.octavia.ListMembers(ctx, pool.ID, pools.ListMembersOpts{
-			ProjectID: p.projectID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list members beneath pool %s before Gateway deletion: %w", pool.ID, err)
-		}
-		sort.Slice(memberList, func(i, j int) bool {
-			if memberList[i].Address == memberList[j].Address {
-				if memberList[i].ProtocolPort == memberList[j].ProtocolPort {
-					return memberList[i].ID < memberList[j].ID
-				}
-				return memberList[i].ProtocolPort < memberList[j].ProtocolPort
-			}
-			return memberList[i].Address < memberList[j].Address
-		})
-		for _, member := range memberList {
-			if err := p.validateOptionalProject("member", member.ID, member.ProjectID); err != nil {
-				return nil, err
-			}
-			if !identity.MatchesGateway(member.Tags, roleMember) {
-				return nil, fmt.Errorf("%w: member %s", cloud.ErrOwnershipConflict, member.ID)
-			}
-			if member.PoolID != "" && member.PoolID != pool.ID {
-				return nil, fmt.Errorf("%w: member %s reports pool %s instead of %s", cloud.ErrOwnershipConflict, member.ID, member.PoolID, pool.ID)
-			}
-			plan = append(plan, gatewayDeletionStep{
-				resource:   gatewayDeletionMember,
-				resourceID: member.ID,
-				parentID:   pool.ID,
-			})
-		}
-		plan = append(plan, gatewayDeletionStep{
-			resource:   gatewayDeletionPool,
-			resourceID: pool.ID,
-		})
-	}
-	plan = append(plan, listenerSteps...)
-	return plan, nil
 }
 
 func (p *Provider) executeGatewayDeletionStep(ctx context.Context, step gatewayDeletionStep) error {
@@ -394,15 +189,6 @@ func (p *Provider) deleteGatewayResource(ctx context.Context, step gatewayDeleti
 	default:
 		return fmt.Errorf("unsupported Gateway deletion resource %q", step.resource)
 	}
-}
-
-func matchesAnyGatewayRole(identity Identity, tags []string, roles ...string) bool {
-	for _, role := range roles {
-		if identity.MatchesGateway(tags, role) {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *Provider) findGatewayLoadBalancer(ctx context.Context, identity Identity) (*loadbalancers.LoadBalancer, error) {

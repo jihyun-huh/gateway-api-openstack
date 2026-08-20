@@ -100,6 +100,36 @@ func TestDeleteGatewayRevalidatesLoadBalancerAfterGet(t *testing.T) {
 	}
 }
 
+func TestDeleteGatewayValidatesEverySubplanBeforeMutation(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
+	requests := &gatewayTransitionRequests{}
+	graphHandler := safetyGatewayGraphHandler(t, identity, "member", newSafetyRequestLog())
+	loadBalancerHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers":
+			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1":
+			safetyWriteJSON(t, w, map[string]any{"loadbalancer": gatewayTransitionLoadBalancer(loadBalancerTags, "ACTIVE")})
+		default:
+			graphHandler.ServeHTTP(w, request)
+		}
+	})
+	provider := NewProvider(ServiceClients{
+		LoadBalancer: safetyServiceClient(loadBalancerHandler),
+		ProjectID:    "project-a",
+	}, ProviderConfig{})
+
+	_, err := provider.DeleteGateway(context.Background(), identity.Value())
+	if !errors.Is(err, cloud.ErrOwnershipConflict) {
+		t.Fatalf("DeleteGateway() error = %v, want ownership conflict from the pool subtree", err)
+	}
+	if got := requests.mutationPaths(); len(got) != 0 {
+		t.Fatalf("DeleteGateway() mutations before complete plan validation = %v, want none", got)
+	}
+}
+
 func TestBuildGatewayDeletionPlanValidatesProjectsAndParents(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	tests := []struct {

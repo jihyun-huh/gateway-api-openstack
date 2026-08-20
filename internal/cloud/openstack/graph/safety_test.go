@@ -213,7 +213,8 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildGatewayDeletionPlan() error = %v", err)
 	}
-	wantDeletionPlan := gatewayDeletionPlan{
+	steps := deletionPlan.orderedSteps()
+	wantDeletionSteps := []gatewayDeletionStep{
 		{resource: gatewayDeletionL7Rule, resourceID: "rule-1", parentID: "policy-1"},
 		{resource: gatewayDeletionL7Policy, resourceID: "policy-1"},
 		{resource: gatewayDeletionMonitor, resourceID: "monitor-1", parentID: "pool-1"},
@@ -221,12 +222,12 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 		{resource: gatewayDeletionPool, resourceID: "pool-1"},
 		{resource: gatewayDeletionListener, resourceID: "listener-1"},
 	}
-	if len(deletionPlan) != len(wantDeletionPlan) {
-		t.Fatalf("buildGatewayDeletionPlan() returned %d steps, want %d: %#v", len(deletionPlan), len(wantDeletionPlan), deletionPlan)
+	if len(steps) != len(wantDeletionSteps) {
+		t.Fatalf("buildGatewayDeletionPlan() returned %d steps, want %d: %#v", len(steps), len(wantDeletionSteps), steps)
 	}
-	for index := range wantDeletionPlan {
-		if deletionPlan[index] != wantDeletionPlan[index] {
-			t.Errorf("buildGatewayDeletionPlan() step %d = %#v, want %#v", index, deletionPlan[index], wantDeletionPlan[index])
+	for index := range wantDeletionSteps {
+		if steps[index] != wantDeletionSteps[index] {
+			t.Errorf("buildGatewayDeletionPlan() step %d = %#v, want %#v", index, steps[index], wantDeletionSteps[index])
 		}
 	}
 
@@ -244,6 +245,23 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 	}
 	if requests.saw("/lbaas/loadbalancers/load-balancer-1/statuses") {
 		t.Error("buildGatewayDeletionPlan() unexpectedly requested the status tree")
+	}
+	wantRequestOrder := []string{
+		"/lbaas/listeners",
+		"/lbaas/l7policies",
+		"/lbaas/l7policies/policy-1/rules",
+		"/lbaas/pools",
+		"/lbaas/healthmonitors",
+		"/lbaas/pools/pool-1/members",
+	}
+	gotRequestOrder := requests.orderedPaths()
+	if len(gotRequestOrder) != len(wantRequestOrder) {
+		t.Fatalf("buildGatewayDeletionPlan() request order = %v, want %v", gotRequestOrder, wantRequestOrder)
+	}
+	for index := range wantRequestOrder {
+		if gotRequestOrder[index] != wantRequestOrder[index] {
+			t.Fatalf("buildGatewayDeletionPlan() request order = %v, want %v", gotRequestOrder, wantRequestOrder)
+		}
 	}
 }
 
@@ -517,8 +535,9 @@ func TestObserveRoutePoliciesRejectsForeignPolicyOrRule(t *testing.T) {
 }
 
 type safetyRequestLog struct {
-	mutex sync.Mutex
-	paths map[string]int
+	mutex    sync.Mutex
+	paths    map[string]int
+	sequence []string
 }
 
 func newSafetyRequestLog() *safetyRequestLog {
@@ -529,12 +548,19 @@ func (log *safetyRequestLog) record(path string) {
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 	log.paths[path]++
+	log.sequence = append(log.sequence, path)
 }
 
 func (log *safetyRequestLog) saw(path string) bool {
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 	return log.paths[path] > 0
+}
+
+func (log *safetyRequestLog) orderedPaths() []string {
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+	return append([]string(nil), log.sequence...)
 }
 
 func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResource string, requests *safetyRequestLog) http.Handler {
