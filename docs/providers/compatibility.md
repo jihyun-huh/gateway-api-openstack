@@ -10,6 +10,11 @@ environment, but its exact versions and topology have not been published.
 It did not test controller traffic, recovery, deletion, or Gateway API
 conformance.
 
+The repository includes an [OpenStack E2E test
+guide](../testing-openstack-e2e.md) and a report template. Their presence does
+not change the current evidence level. This page changes only after a report
+contains results from a named controller revision and environment.
+
 The project uses `probed`, `verified`, `supported`, and `conformant` as separate
 evidence levels. The definitions are in the roadmap. A higher level is never
 inferred from a lower one.
@@ -45,6 +50,12 @@ Amphora and explain how Amphora reaches backend members. Publish only
 information you are authorized to share. Remove credentials, tokens, tenant
 identifiers, private addresses, customer names, and other sensitive topology
 details.
+
+Run controller checks only in a disposable, dedicated OpenStack project. Pin
+the controller image by digest and install the Gateway API v1.6.1 Standard
+Channel CRDs. Follow the [E2E test guide](../testing-openstack-e2e.md) for the
+preflight, baseline scenarios, fault result semantics, cleanup order, and leak
+inventory.
 
 Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md)
 for evidence kept in the repository. Use the
