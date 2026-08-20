@@ -149,7 +149,9 @@ See [the current development priorities](docs/development-priorities.md) for a
 concrete refactoring and evidence backlog, and [ROADMAP.md](ROADMAP.md) for the
 complete phased plan. The
 [Amphora compatibility evidence](docs/providers/compatibility.md) page records
-what has and has not been tested.
+what has and has not been tested. The [OpenStack E2E test
+guide](docs/testing-openstack-e2e.md) describes how to collect the first
+controller report without treating the unrun template as evidence.
 
 ## Getting started
 
