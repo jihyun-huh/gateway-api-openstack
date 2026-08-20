@@ -229,7 +229,10 @@ internal/cloud/openstack/
 ├── compatibility.go
 ├── wait.go
 ├── clients/
-│   └── client.go
+│   ├── client.go
+│   └── request_observer.go
+├── observability/
+│   └── metrics.go
 ├── apierrors/
 │   └── classify.go
 ├── identity/
@@ -260,7 +263,11 @@ internal/cloud/openstack/
 The packages have these responsibilities:
 
 - `clients` authenticates once, creates shared service clients, and applies the
-  process-wide request limit.
+  process-wide request limit. It also emits bounded request observations
+  without depending on a metrics implementation.
+- `observability` turns the bounded observations from `clients` into
+  process-local Prometheus metrics. The controller command registers it when
+  the manager starts.
 - `apierrors` classifies Gophercloud and HTTP failures into provider-neutral
   cloud errors.
 - `identity` encodes and validates immutable ownership metadata.
@@ -279,6 +286,9 @@ facade. Kubernetes and Gateway API types do not enter any OpenStack package.
 by ADR 0001. It is the provider-side home for the existing, separate Gateway
 and HTTPRoute operations. The split changes where the code lives, not resource
 ownership, route selection, provider interfaces, or mutation behavior.
+The `observability` package reports calls made through these existing
+boundaries. It does not change the provider interface or the graph ownership
+boundary.
 
 Use a new service package when it has a distinct OpenStack client and failure
 boundary. Keep resources from the same service as files in that package until

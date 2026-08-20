@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -35,11 +36,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	controllermetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
+	openstackobservability "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/observability"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
@@ -173,6 +176,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create controller manager: %w", err)
 	}
+	if err := configureOpenStackRequestMetrics(&openStackClientConfig, controllermetrics.Registry); err != nil {
+		return err
+	}
 	serviceClients, err := openstack.NewServiceClients(ctx, openStackClientConfig)
 	if err != nil {
 		return err
@@ -229,6 +235,15 @@ func run(ctx context.Context) error {
 	if err := manager.Start(ctx); err != nil {
 		return fmt.Errorf("run controller manager: %w", err)
 	}
+	return nil
+}
+
+func configureOpenStackRequestMetrics(config *openstack.ClientConfig, registerer prometheus.Registerer) error {
+	requestMetrics, err := openstackobservability.RegisterRequestMetrics(registerer)
+	if err != nil {
+		return fmt.Errorf("register OpenStack request metrics: %w", err)
+	}
+	config.RequestObserver = requestMetrics
 	return nil
 }
 

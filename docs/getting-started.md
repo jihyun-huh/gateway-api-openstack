@@ -130,8 +130,11 @@ kubectl -n openstack-gateway-system rollout status \
 ```
 
 The Deployment starts two replicas with leader election. It exposes health and
-readiness probes on port 8081 and controller-runtime metrics inside each Pod on
-port 8080. Metrics are not exposed through a Service by the base manifests.
+readiness probes on port 8081. Port 8080 exposes controller-runtime metrics and
+bounded OpenStack request, duration, mutation attempt, and in-flight metrics
+inside each Pod. These OpenStack metrics are process-local and reset when the
+controller process restarts. The base manifests do not expose metrics through a
+Service.
 
 ## Current configuration reference
 
