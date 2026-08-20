@@ -18,10 +18,8 @@ package httproute
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -64,89 +62,6 @@ func (r *Reconciler) detachPreviousGateway(
 		return ctrl.Result{}, nil
 	}
 	return r.detachRoute(ctx, route)
-}
-
-func (r *Reconciler) validateRouteCleanupMutation(
-	ctx context.Context,
-	route *gatewayv1.HTTPRoute,
-	stored cloud.Identity,
-) error {
-	if !route.DeletionTimestamp.IsZero() {
-		return nil
-	}
-	handoff, err := r.storedRouteCleanupAllowedDuringVersionMismatch(ctx, route, stored)
-	if err != nil {
-		return err
-	}
-	if handoff {
-		return nil
-	}
-	if err := controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader); err != nil {
-		return err
-	}
-	required, err := r.routeCleanupRequired(ctx, route, stored)
-	if err != nil {
-		return err
-	}
-	if !required {
-		return errHTTPRouteChanged
-	}
-	return nil
-}
-
-func (r *Reconciler) routeCleanupRequired(
-	ctx context.Context,
-	expected *gatewayv1.HTTPRoute,
-	stored cloud.Identity,
-) (bool, error) {
-	var route gatewayv1.HTTPRoute
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &route); err != nil {
-		return false, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-	}
-	if !sameHTTPRouteRevision(&route, expected.UID, expected.Generation, false) ||
-		route.ResourceVersion != expected.ResourceVersion {
-		return false, errHTTPRouteChanged
-	}
-	parents, err := r.managedParentsWithReader(ctx, r.APIReader, &route)
-	if err != nil {
-		return false, err
-	}
-	if len(route.Spec.ParentRefs) != 1 || len(parents) != 1 {
-		return true, nil
-	}
-	parent := parents[0]
-	if !controller.GatewayClassSupportsInstalledVersion(parent.gatewayClass) {
-		return false, controller.ErrUnsupportedGatewayAPIVersion
-	}
-	if parent.gatewayClass.Spec.ParametersRef != nil {
-		return false, errHTTPRouteChanged
-	}
-	if validateRouteParent(&route, parent) != nil || !structurallySupportedRoute(&route) {
-		return true, nil
-	}
-	decision, err := r.evaluateRouteSlotWithReader(ctx, r.APIReader, &route)
-	if err != nil {
-		return false, err
-	}
-	if !decision.canReserve {
-		return true, nil
-	}
-	selected, err := r.isSelectedRouteWithReader(ctx, r.APIReader, &route, parent, false)
-	if err != nil {
-		return false, err
-	}
-	if !selected {
-		return true, nil
-	}
-	spec, err := r.buildRouteSpecWithReader(ctx, r.APIReader, &route, parent.gateway)
-	if err != nil {
-		var buildError *routeBuildError
-		if errors.As(err, &buildError) || apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, err
-	}
-	return spec.Identity != stored, nil
 }
 
 func (r *Reconciler) detachRoute(ctx context.Context, route *gatewayv1.HTTPRoute) (ctrl.Result, error) {
@@ -301,24 +216,20 @@ func (r *Reconciler) deleteRoute(
 	}
 	defer release()
 
-	var current gatewayv1.HTTPRoute
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
-		return cloud.Outcome{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-	}
-	if !sameHTTPRouteRevision(&current, expected.UID, expected.Generation, !expected.DeletionTimestamp.IsZero()) ||
-		current.ResourceVersion != expected.ResourceVersion {
-		return cloud.Outcome{}, errHTTPRouteChanged
-	}
-	stored, present, err := r.storedRouteIdentity(&current)
+	snapshot, err := r.buildRouteCleanupSnapshot(ctx, expected, identity)
 	if err != nil {
 		return cloud.Outcome{}, err
 	}
-	if !present || stored != identity {
+	switch snapshot.disposition {
+	case routeCleanupStillDesired:
 		return cloud.Outcome{}, errHTTPRouteChanged
+	case routeCleanupRequired:
+	default:
+		return cloud.Outcome{}, fmt.Errorf("invalid HTTPRoute cleanup snapshot disposition %d", snapshot.disposition)
 	}
-	if err := r.validateRouteCleanupMutation(ctx, &current, stored); err != nil {
+	if err := r.sealRouteCleanupSnapshot(ctx, snapshot); err != nil {
 		return cloud.Outcome{}, err
 	}
 
-	return r.Provider.DeleteRoute(ctx, stored)
+	return r.Provider.DeleteRoute(ctx, snapshot.identity)
 }

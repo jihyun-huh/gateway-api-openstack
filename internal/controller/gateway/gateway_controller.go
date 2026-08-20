@@ -19,12 +19,11 @@ package gateway
 import (
 	"context"
 	"errors"
-	"strconv"
+	"fmt"
 
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -94,69 +93,101 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, scope *gatewayScope) (
 }
 
 func (r *Reconciler) reconcileNormal(ctx context.Context, scope *gatewayScope) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	gateway := scope.gateway
-
-	if !scope.managed {
-		if controller.GatewayHasControllerBinding(r.Config, gateway) {
-			result, err := r.cleanupGateway(ctx, scope)
-			if err != nil {
-				return result, err
-			}
-			if result.RequeueAfter > 0 {
-				return result, nil
-			}
-			logger.V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
-		}
+	decision := r.decideGatewayPhase(scope)
+	switch decision.phase {
+	case gatewayPhaseIgnore:
 		return ctrl.Result{}, nil
-	}
-	if scope.gatewayClass != nil && !controller.GatewayClassSupportsInstalledVersion(scope.gatewayClass) {
+	case gatewayPhaseCleanupUnmanaged:
+		return r.reconcileUnmanagedGateway(ctx, scope)
+	case gatewayPhaseUnsupportedVersion:
 		return r.setGatewayUnsupportedVersion(ctx, scope)
-	}
-	if err := controller.ValidateGatewayBinding(r.Config, gateway); err != nil {
-		r.setGatewayFailureReason(gateway, gatewayv1.GatewayReasonInvalidParameters, err.Error())
+	case gatewayPhaseInvalidBinding:
+		r.setGatewayFailureReason(scope.gateway, gatewayv1.GatewayReasonInvalidParameters, decision.validation.Error())
 		return ctrl.Result{}, nil
+	case gatewayPhaseUnsupportedParameters, gatewayPhaseInvalidSpec:
+		return r.reconcileRejectedGateway(ctx, scope, decision)
+	case gatewayPhaseReplaceGraph:
+		return r.reconcileGatewayReplacement(ctx, scope, decision)
+	case gatewayPhaseBind:
+		return r.reconcileGatewayBinding(ctx, scope, decision)
+	case gatewayPhaseEnsure:
+		return r.reconcileGatewayGraph(ctx, scope, decision)
+	default:
+		return ctrl.Result{}, fmt.Errorf("unsupported Gateway reconciliation phase %d", decision.phase)
 	}
-	if scope.gatewayClass != nil && scope.gatewayClass.Spec.ParametersRef != nil {
-		r.setGatewayFailureReason(gateway, gatewayv1.GatewayReasonInvalidParameters, "GatewayClass parametersRef is not supported in Phase 1")
-		if scope.statusChanged() {
-			return ctrl.Result{Requeue: true}, nil
-		}
-		return r.cleanupGateway(ctx, scope)
-	}
+}
 
-	gatewayListener, validationErr := Validate(gateway)
-	if validationErr != nil {
-		r.setGatewayFailure(gateway, validationErr)
-		if scope.statusChanged() {
-			return ctrl.Result{Requeue: true}, nil
-		}
-		return r.cleanupGateway(ctx, scope)
+func (r *Reconciler) reconcileUnmanagedGateway(ctx context.Context, scope *gatewayScope) (ctrl.Result, error) {
+	result, err := r.cleanupGateway(ctx, scope)
+	if err == nil && result.RequeueAfter == 0 {
+		log.FromContext(ctx).V(1).Info("Cleaned up OpenStack resources for unmanaged Gateway")
 	}
-	desiredListenerPort := strconv.Itoa(int(gatewayListener.Port))
-	storedListenerPort := gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
-	if storedListenerPort != "" && storedListenerPort != desiredListenerPort {
-		if err := r.setGatewayProgressing(ctx, gateway, gatewayListener, "Listener port changed; replacing the controller-owned OpenStack resource graph"); err != nil {
-			return ctrl.Result{}, err
-		}
-		if scope.statusChanged() {
-			return ctrl.Result{Requeue: true}, nil
-		}
-		return r.cleanupGateway(ctx, scope)
+	return result, err
+}
+
+func (r *Reconciler) reconcileRejectedGateway(
+	ctx context.Context,
+	scope *gatewayScope,
+	decision gatewayPhaseDecision,
+) (ctrl.Result, error) {
+	switch decision.phase {
+	case gatewayPhaseUnsupportedParameters:
+		r.setGatewayFailureReason(
+			scope.gateway,
+			gatewayv1.GatewayReasonInvalidParameters,
+			"GatewayClass parametersRef is not supported in Phase 1",
+		)
+	case gatewayPhaseInvalidSpec:
+		r.setGatewayFailure(scope.gateway, decision.validation)
+	default:
+		return ctrl.Result{}, fmt.Errorf("phase %d does not describe a rejected Gateway", decision.phase)
 	}
-	storedClusterID := gateway.Annotations[r.Config.GatewayClusterIDAnnotation()]
-	storedOpenStackProjectID := gateway.Annotations[r.Config.GatewayProjectIDAnnotation()]
-	if !controllerutil.ContainsFinalizer(gateway, r.Config.GatewayFinalizer()) || storedListenerPort == "" || storedClusterID == "" || storedOpenStackProjectID == "" {
-		if err := r.bindGateway(ctx, gateway, desiredListenerPort); err != nil {
-			if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
-				return r.setGatewayUnsupportedVersion(ctx, scope)
-			}
-			return ctrl.Result{}, err
-		}
-		logger.V(1).Info("Added finalizer and OpenStack resource binding to Gateway")
+	return r.cleanupGatewayAfterStatusCheckpoint(ctx, scope)
+}
+
+func (r *Reconciler) reconcileGatewayReplacement(
+	ctx context.Context,
+	scope *gatewayScope,
+	decision gatewayPhaseDecision,
+) (ctrl.Result, error) {
+	message := "Listener port changed; replacing the controller-owned OpenStack resource graph"
+	if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listener, message); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.cleanupGatewayAfterStatusCheckpoint(ctx, scope)
+}
+
+func (r *Reconciler) cleanupGatewayAfterStatusCheckpoint(
+	ctx context.Context,
+	scope *gatewayScope,
+) (ctrl.Result, error) {
+	if scope.statusChanged() {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	gatewayResult, err := r.ensureGateway(ctx, gateway)
+	return r.cleanupGateway(ctx, scope)
+}
+
+func (r *Reconciler) reconcileGatewayBinding(
+	ctx context.Context,
+	scope *gatewayScope,
+	decision gatewayPhaseDecision,
+) (ctrl.Result, error) {
+	if err := r.bindGateway(ctx, scope.gateway, decision.listenerPort); err != nil {
+		if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
+			return r.setGatewayUnsupportedVersion(ctx, scope)
+		}
+		return ctrl.Result{}, err
+	}
+	log.FromContext(ctx).V(1).Info("Added finalizer and OpenStack resource binding to Gateway")
+	return ctrl.Result{Requeue: true}, nil
+}
+
+func (r *Reconciler) reconcileGatewayGraph(
+	ctx context.Context,
+	scope *gatewayScope,
+	decision gatewayPhaseDecision,
+) (ctrl.Result, error) {
+	gatewayResult, err := r.ensureGateway(ctx, scope.gateway)
 	if err != nil {
 		if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
 			return r.setGatewayUnsupportedVersion(ctx, scope)
@@ -164,19 +195,19 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, scope *gatewayScope) (
 		if errors.Is(err, errGatewayChanged) {
 			return ctrl.Result{}, err
 		}
-		return r.handleGatewayProviderFailure(ctx, scope, gatewayListener, err)
+		return r.handleGatewayProviderFailure(ctx, scope, decision.listener, err)
 	}
 	if gatewayResult.Outcome.State == cloud.OutcomeProgressing {
 		message := controller.ProviderProgressMessage(gatewayResult.Outcome, "Octavia resources for the Gateway are still progressing")
-		if err := r.setGatewayProgressing(ctx, gateway, gatewayListener, message); err != nil {
+		if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listener, message); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(gatewayResult.Outcome, gateway.UID)}, nil
+		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(gatewayResult.Outcome, scope.gateway.UID)}, nil
 	}
 	gatewayState := gatewayResult.State
-	logger.V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
-	if err := r.setGatewayProgrammed(ctx, gateway, gatewayListener, gatewayState); err != nil {
+	log.FromContext(ctx).V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
+	if err := r.setGatewayProgrammed(ctx, scope.gateway, decision.listener, gatewayState); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: controller.OpenStackResyncAfter(r.Config.OpenStackResyncInterval, gateway.UID)}, nil
+	return ctrl.Result{RequeueAfter: controller.OpenStackResyncAfter(r.Config.OpenStackResyncInterval, scope.gateway.UID)}, nil
 }

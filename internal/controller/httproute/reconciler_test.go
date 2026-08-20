@@ -19,6 +19,7 @@ package httproute
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -652,6 +653,145 @@ func TestBindRouteRejectsStaleGeneration(t *testing.T) {
 	}
 }
 
+func TestBindRouteChecksGatewayProgrammedBeforeBackendModel(t *testing.T) {
+	scheme := testScheme(t)
+	cfg := testConfig()
+	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "missing-backend")
+	route.UID = "route-uid"
+	route.Generation = 1
+	gateway := programmedTestGateway(cfg)
+	gateway.Status.Conditions = nil
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	kubeClient := indexedFakeClientBuilder(scheme, cfg).
+		WithObjects(route, gateway, gatewayClass).
+		Build()
+	reconciler := Reconciler{
+		Client: kubeClient, APIReader: kubeClient, Provider: &recordingProvider{}, Config: cfg,
+	}
+
+	_, err := reconciler.bindRoute(context.Background(), route, gateway)
+	if !errors.Is(err, errHTTPRouteChanged) {
+		t.Fatalf("bindRoute() error = %v, want %v", err, errHTTPRouteChanged)
+	}
+	if apierrors.IsNotFound(err) {
+		t.Fatalf("bindRoute() read the backend before checking Gateway Programmed: %v", err)
+	}
+}
+
+func TestEnsureRouteGraphReusesValidationSnapshotForBinding(t *testing.T) {
+	scheme := testScheme(t)
+	cfg := testConfig()
+	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
+	route.UID = "route-uid"
+	route.Generation = 1
+	gateway := programmedTestGateway(cfg)
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+	}
+	service, endpointSlice, node := validNodePortBackend("default", "backend")
+	kubeClient := indexedFakeClientBuilder(scheme, cfg).
+		WithObjects(route, gateway, gatewayClass, service, endpointSlice, node).
+		Build()
+	liveReader := &endpointSliceCountingReader{Reader: kubeClient}
+	provider := &recordingProvider{}
+	reconciler := Reconciler{
+		Client: kubeClient, APIReader: liveReader, Provider: provider,
+		Coordinator: &graph.Coordinator{}, Config: cfg,
+	}
+
+	result, err := reconciler.ensureRouteGraph(context.Background(), route, gateway)
+	if err != nil {
+		t.Fatalf("ensureRouteGraph() error = %v", err)
+	}
+	if !result.bindingCheckpoint {
+		t.Fatalf("ensureRouteGraph() result = %#v, want binding checkpoint", result)
+	}
+	if liveReader.endpointSliceLists != 1 {
+		t.Fatalf("EndpointSlice lists = %d, want one model build", liveReader.endpointSliceLists)
+	}
+	if len(provider.routeSpecs) != 0 {
+		t.Fatalf("EnsureRoute calls = %d, want none before the binding checkpoint", len(provider.routeSpecs))
+	}
+}
+
+func TestEnsureRouteGraphRejectsUnsafeBindingTransition(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(Config, *Reconciler, *gatewayv1.HTTPRoute)
+		wantChanged bool
+		wantMessage string
+	}{
+		{
+			name: "incomplete binding",
+			prepare: func(cfg Config, _ *Reconciler, route *gatewayv1.HTTPRoute) {
+				route.Finalizers = []string{cfg.RouteFinalizer()}
+			},
+			wantMessage: "has the controller finalizer but no complete stored Gateway identity",
+		},
+		{
+			name: "different Gateway binding",
+			prepare: func(cfg Config, reconciler *Reconciler, route *gatewayv1.HTTPRoute) {
+				oldGateway := programmedTestGateway(cfg)
+				oldGateway.Name = "old-edge"
+				oldGateway.UID = "old-gateway-uid"
+				reconciler.applyRouteBinding(route, oldGateway)
+			},
+			wantChanged: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig()
+			route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
+			route.UID = "route-uid"
+			route.Generation = 1
+			gateway := programmedTestGateway(cfg)
+			gatewayClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+			}
+			provider := &recordingProvider{}
+			reconciler := Reconciler{Provider: provider, Coordinator: &graph.Coordinator{}, Config: cfg}
+			test.prepare(cfg, &reconciler, route)
+			originalGatewayUID := route.Annotations[cfg.RouteGatewayUIDAnnotation()]
+			service, endpointSlice, node := validNodePortBackend("default", "backend")
+			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
+				WithObjects(route, gateway, gatewayClass, service, endpointSlice, node).
+				Build()
+			reconciler.Client = kubeClient
+			reconciler.APIReader = kubeClient
+
+			_, err := reconciler.ensureRouteGraph(context.Background(), route, gateway)
+			if test.wantChanged {
+				if !errors.Is(err, errHTTPRouteChanged) {
+					t.Fatalf("ensureRouteGraph() error = %v, want %v", err, errHTTPRouteChanged)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("ensureRouteGraph() error = %v, want message %q", err, test.wantMessage)
+			}
+			if len(provider.routeSpecs) != 0 {
+				t.Fatalf("EnsureRoute calls = %d, want none", len(provider.routeSpecs))
+			}
+			var current gatewayv1.HTTPRoute
+			if getErr := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), &current); getErr != nil {
+				t.Fatal(getErr)
+			}
+			if current.Annotations[cfg.RouteGatewayUIDAnnotation()] != originalGatewayUID {
+				t.Fatalf(
+					"stored Gateway UID = %q, want unchanged %q",
+					current.Annotations[cfg.RouteGatewayUIDAnnotation()],
+					originalGatewayUID,
+				)
+			}
+		})
+	}
+}
+
 func TestDetachRouteRejectsStaleGeneration(t *testing.T) {
 	scheme := testScheme(t)
 	cfg := testConfig()
@@ -793,6 +933,22 @@ type conflictOncePatchClient struct {
 	client.Client
 	cachedRoute *gatewayv1.HTTPRoute
 	patchCalls  int
+}
+
+type endpointSliceCountingReader struct {
+	client.Reader
+	endpointSliceLists int
+}
+
+func (r *endpointSliceCountingReader) List(
+	ctx context.Context,
+	list client.ObjectList,
+	options ...client.ListOption,
+) error {
+	if _, ok := list.(*discoveryv1.EndpointSliceList); ok {
+		r.endpointSliceLists++
+	}
+	return r.Reader.List(ctx, list, options...)
 }
 
 func (c *conflictOncePatchClient) Get(

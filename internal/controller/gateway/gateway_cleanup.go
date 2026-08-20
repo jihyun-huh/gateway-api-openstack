@@ -20,11 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -112,61 +110,12 @@ func (r *Reconciler) deleteGateway(ctx context.Context, expected *gatewayv1.Gate
 	}
 	defer release()
 
-	var current gatewayv1.Gateway
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
-		return cloud.Outcome{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
-	}
-	if current.UID != expected.UID || current.Generation != expected.Generation ||
-		current.ResourceVersion != expected.ResourceVersion || current.DeletionTimestamp.IsZero() != expected.DeletionTimestamp.IsZero() {
-		return cloud.Outcome{}, errGatewayChanged
-	}
-	if err := controller.ValidateGatewayBinding(r.Config, &current); err != nil {
-		return cloud.Outcome{}, errors.Join(errGatewayChanged, err)
-	}
-	if err := r.validateGatewayCleanupMutation(ctx, &current); err != nil {
+	snapshot, err := r.observeGatewayCleanupSnapshot(ctx, expected)
+	if err != nil {
 		return cloud.Outcome{}, err
 	}
-
-	return r.Provider.DeleteGateway(ctx, controller.StoredGatewayIdentity(r.Config, &current))
-}
-
-func (r *Reconciler) validateGatewayCleanupMutation(
-	ctx context.Context,
-	gateway *gatewayv1.Gateway,
-) error {
-	if !gateway.DeletionTimestamp.IsZero() {
-		return nil
+	if snapshot.disposition != gatewayCleanupDelete {
+		return cloud.Outcome{}, errGatewayChanged
 	}
-	var gatewayClass gatewayv1.GatewayClass
-	if err := r.APIReader.Get(
-		ctx,
-		types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)},
-		&gatewayClass,
-	); err != nil {
-		if apierrors.IsNotFound(err) {
-			return controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader)
-		}
-		return fmt.Errorf("get GatewayClass before Gateway cleanup: %w", err)
-	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
-		return nil
-	}
-	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
-		return controller.ErrUnsupportedGatewayAPIVersion
-	}
-	if err := controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader); err != nil {
-		return err
-	}
-	if gatewayClass.Spec.ParametersRef != nil {
-		return nil
-	}
-	listener, validationErr := Validate(gateway)
-	if validationErr != nil {
-		return nil
-	}
-	storedListenerPort := gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
-	if storedListenerPort != "" && storedListenerPort != strconv.Itoa(int(listener.Port)) {
-		return nil
-	}
-	return errGatewayChanged
+	return r.Provider.DeleteGateway(ctx, snapshot.identity)
 }

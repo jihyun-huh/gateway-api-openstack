@@ -18,14 +18,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
@@ -45,38 +40,16 @@ func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gate
 	}
 	defer release()
 
-	var current gatewayv1.Gateway
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(expected), &current); err != nil {
-		return cloud.GatewayResult{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
+	snapshot, err := r.observeGatewayMutationSnapshot(ctx, expected, gatewayBindingRequired, "")
+	if err != nil {
+		return cloud.GatewayResult{}, err
 	}
-	if current.UID != expected.UID || current.Generation != expected.Generation || !current.DeletionTimestamp.IsZero() {
-		return cloud.GatewayResult{}, errGatewayChanged
-	}
-	var gatewayClass gatewayv1.GatewayClass
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: string(current.Spec.GatewayClassName)}, &gatewayClass); err != nil {
-		return cloud.GatewayResult{}, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
-	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName || gatewayClass.Spec.ParametersRef != nil {
-		return cloud.GatewayResult{}, errGatewayChanged
-	}
-	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
-		return cloud.GatewayResult{}, controller.ErrUnsupportedGatewayAPIVersion
-	}
-	if !controllerutil.ContainsFinalizer(&current, r.Config.GatewayFinalizer()) {
-		return cloud.GatewayResult{}, errGatewayChanged
-	}
-	if err := controller.ValidateGatewayBinding(r.Config, &current); err != nil {
-		return cloud.GatewayResult{}, errors.Join(errGatewayChanged, err)
-	}
-	listener, validationErr := Validate(&current)
-	if validationErr != nil || current.Annotations[r.Config.GatewayListenerPortAnnotation()] != strconv.Itoa(int(listener.Port)) {
-		return cloud.GatewayResult{}, errGatewayChanged
-	}
-	if err := r.validateGatewayMutationOwnership(ctx, &current, true); err != nil {
+	desired := r.gatewaySpec(snapshot.gateway, snapshot.listener)
+	if err := r.sealGatewayMutationSnapshot(ctx, snapshot); err != nil {
 		return cloud.GatewayResult{}, err
 	}
 
-	result, err := r.Provider.EnsureGateway(ctx, r.gatewaySpec(&current, listener))
+	result, err := r.Provider.EnsureGateway(ctx, desired)
 	if err != nil {
 		return cloud.GatewayResult{}, err
 	}
