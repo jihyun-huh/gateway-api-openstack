@@ -57,6 +57,10 @@ type ClientConfig struct {
 	AllowInsecure  bool
 	APIQPS         float64
 	APIBurst       int
+	// RequestObserver receives bounded observations for requests made after
+	// service discovery. It is optional so standalone read-only commands do not
+	// register or emit controller metrics by default.
+	RequestObserver RequestObserver
 }
 
 // Validate checks settings that must be safe before authentication starts.
@@ -134,6 +138,9 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 	networkClient, err := gopheropenstack.NewNetworkV2(provider, endpointOptions)
 	if err != nil {
 		return ServiceClients{}, fmt.Errorf("create Neutron client: %w", err)
+	}
+	if cfg.RequestObserver != nil {
+		installRequestObserver(provider, loadBalancerClient, networkClient, cfg.RequestObserver)
 	}
 
 	return ServiceClients{

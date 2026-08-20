@@ -19,7 +19,30 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
+
+func TestConfigureOpenStackRequestMetrics(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	first := openstack.ClientConfig{}
+	if err := configureOpenStackRequestMetrics(&first, registry); err != nil {
+		t.Fatalf("configureOpenStackRequestMetrics() error = %v", err)
+	}
+	if first.RequestObserver == nil {
+		t.Fatal("configureOpenStackRequestMetrics() did not configure an observer")
+	}
+
+	second := openstack.ClientConfig{}
+	if err := configureOpenStackRequestMetrics(&second, registry); err != nil {
+		t.Fatalf("repeated configureOpenStackRequestMetrics() error = %v", err)
+	}
+	if second.RequestObserver == nil {
+		t.Fatal("repeated configureOpenStackRequestMetrics() did not configure an observer")
+	}
+}
 
 func TestDurationEnvOr(t *testing.T) {
 	const name = "GATEWAY_OPENSTACK_TEST_DURATION"
