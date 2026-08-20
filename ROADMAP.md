@@ -87,6 +87,8 @@ a reason to start the Phase 3 CRD early.
 1. **Prove the current slice.** Publish the first controller traffic, restart,
    no-op, fault, deletion, and leak report from a disposable Amphora
    environment. Exercise blocked finalization and the ownership audit there.
+   Use the [OpenStack E2E test guide](docs/testing-openstack-e2e.md) and retain
+   the completed report with the compatibility evidence.
 2. **Finish the design boundary.** Accept the graph writer and public identity
    ADRs, replace the two cloud mutation paths with one complete desired Gateway
    graph, and publish the pinned GATEWAY-HTTP gap analysis.
