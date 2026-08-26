@@ -9,6 +9,10 @@ Use these templates:
 - [OpenStack controller E2E](openstack-e2e-template.md)
 - [Gateway API conformance gap](conformance-gap-template.md)
 
+Follow the [OpenStack E2E test guide](../testing-openstack-e2e.md) before using
+the controller report template. The guide defines the project isolation,
+artifact pinning, result meanings, and cleanup order expected by the report.
+
 Put completed reports in a directory named for the controller release or short
 commit, then use a short environment or report name. Keep raw logs outside Git
 when they contain private identifiers. Link only redacted artifacts that can be
@@ -16,3 +20,7 @@ retained for as long as the report is used.
 
 Do not edit an old report to describe a newer release. Add another report and
 link it from the compatibility matrix.
+
+Templates and empty result tables are not evidence. Keep a scenario as
+`Not run` until the named assertion has been exercised in the environment
+recorded by that report.
