@@ -404,6 +404,9 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	if _, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
 		t.Fatalf("second HTTPRoute Reconcile() error = %v", err)
 	}
+	if liveReader.crdListCalls != 0 {
+		t.Fatalf("HTTPRoute handoff cleanup listed Gateway API CRDs %d times, want 0", liveReader.crdListCalls)
+	}
 	if _, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
 	}); err != nil {
@@ -970,6 +973,7 @@ type unsupportedGatewayAPIVersionReader struct {
 	client.Client
 	gatewayClass  *gatewayv1.GatewayClass
 	useClientCRDs bool
+	crdListCalls  int
 }
 
 func (r *unsupportedGatewayAPIVersionReader) Get(
@@ -996,6 +1000,7 @@ func (r *unsupportedGatewayAPIVersionReader) List(
 	if (!ok && !metadataOK) || r.useClientCRDs {
 		return r.Client.List(ctx, list, opts...)
 	}
+	r.crdListCalls++
 	if ok {
 		definitions.Items = nil
 	}
@@ -1016,6 +1021,6 @@ func (r *unsupportedGatewayAPIVersionReader) List(
 	return nil
 }
 
-func liveReaderWithUnsupportedVersion(kubeClient client.Client) client.Reader {
+func liveReaderWithUnsupportedVersion(kubeClient client.Client) *unsupportedGatewayAPIVersionReader {
 	return &unsupportedGatewayAPIVersionReader{Client: kubeClient}
 }

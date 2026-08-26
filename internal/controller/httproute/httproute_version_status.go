@@ -19,17 +19,14 @@ package httproute
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
 )
 
@@ -115,58 +112,4 @@ func (r *Reconciler) unsupportedGatewayAPIVersionRouteStatus(
 		break
 	}
 	return status
-}
-
-func (r *Reconciler) storedRouteCleanupAllowedDuringVersionMismatch(
-	ctx context.Context,
-	route *gatewayv1.HTTPRoute,
-	stored cloud.Identity,
-) (bool, error) {
-	if r.APIReader == nil {
-		return false, controller.ErrAPIReaderRequired
-	}
-	var current gatewayv1.HTTPRoute
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(route), &current); err != nil {
-		return false, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-	}
-	if !sameHTTPRouteRevision(&current, route.UID, route.Generation, !route.DeletionTimestamp.IsZero()) {
-		return false, errHTTPRouteChanged
-	}
-	if route.ResourceVersion != "" && current.ResourceVersion != route.ResourceVersion {
-		return false, errHTTPRouteChanged
-	}
-
-	for _, parentRef := range current.Spec.ParentRefs {
-		if !controller.IsGatewayParentRef(parentRef) {
-			continue
-		}
-		namespace := current.Namespace
-		if parentRef.Namespace != nil {
-			namespace = string(*parentRef.Namespace)
-		}
-		var gateway gatewayv1.Gateway
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: string(parentRef.Name)}, &gateway); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return false, fmt.Errorf("get parent Gateway during Gateway API version check: %w", err)
-		}
-		var gatewayClass gatewayv1.GatewayClass
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gatewayClass); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, fmt.Errorf("get parent GatewayClass during Gateway API version check: %w", err)
-		}
-		if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
-			continue
-		}
-		boundGatewayIsDeleting := gateway.Namespace == stored.GatewayNamespace &&
-			gateway.Name == stored.GatewayName && string(gateway.UID) == stored.GatewayUID &&
-			!gateway.DeletionTimestamp.IsZero()
-		if !boundGatewayIsDeleting {
-			return false, nil
-		}
-	}
-	return true, nil
 }
