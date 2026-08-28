@@ -29,45 +29,53 @@ import (
 )
 
 const (
-	enableEnvironment                = "GATEWAY_OPENSTACK_E2E"
-	dedicatedProjectEnvironment      = "GATEWAY_OPENSTACK_E2E_DEDICATED_PROJECT"
-	runIDEnvironment                 = "GATEWAY_OPENSTACK_E2E_RUN_ID"
-	namespaceEnvironment             = "GATEWAY_OPENSTACK_E2E_NAMESPACE"
-	kubeconfigEnvironment            = "GATEWAY_OPENSTACK_E2E_KUBECONFIG"
-	kubeContextEnvironment           = "GATEWAY_OPENSTACK_E2E_CONTEXT"
-	controllerNameEnvironment        = "GATEWAY_OPENSTACK_E2E_CONTROLLER_NAME"
-	controllerNamespaceEnvironment   = "GATEWAY_OPENSTACK_E2E_CONTROLLER_NAMESPACE"
-	controllerDeploymentEnvironment  = "GATEWAY_OPENSTACK_E2E_CONTROLLER_DEPLOYMENT"
-	controllerContainerEnvironment   = "GATEWAY_OPENSTACK_E2E_CONTROLLER_CONTAINER"
-	controllerReplicasEnvironment    = "GATEWAY_OPENSTACK_E2E_CONTROLLER_REPLICAS"
-	controllerImageDigestEnvironment = "GATEWAY_OPENSTACK_E2E_CONTROLLER_IMAGE_DIGEST"
-	controllerRevisionEnvironment    = "GATEWAY_OPENSTACK_E2E_CONTROLLER_REVISION"
-	leaderLeaseEnvironment           = "GATEWAY_OPENSTACK_E2E_LEASE_NAME"
-	backendImageEnvironment          = "GATEWAY_OPENSTACK_E2E_BACKEND_IMAGE"
-	artifactDirectoryEnvironment     = "GATEWAY_OPENSTACK_E2E_ARTIFACT_DIR"
-	restartModeEnvironment           = "GATEWAY_OPENSTACK_E2E_RESTART_MODE"
-	timeoutEnvironment               = "GATEWAY_OPENSTACK_E2E_TIMEOUT"
-	pollIntervalEnvironment          = "GATEWAY_OPENSTACK_E2E_POLL_INTERVAL"
-	httpTimeoutEnvironment           = "GATEWAY_OPENSTACK_E2E_HTTP_TIMEOUT"
-	noOpWindowEnvironment            = "GATEWAY_OPENSTACK_E2E_NOOP_WINDOW"
-	auditEnableEnvironment           = "GATEWAY_OPENSTACK_E2E_AUDIT"
-	auditBinaryEnvironment           = "GATEWAY_OPENSTACK_E2E_AUDIT_BINARY"
-	clusterIDEnvironment             = "GATEWAY_OPENSTACK_E2E_CLUSTER_ID"
-	auditCloudsYAMLEnvironment       = "GATEWAY_OPENSTACK_E2E_AUDIT_CLOUDS_YAML"
-	auditCloudEnvironment            = "GATEWAY_OPENSTACK_E2E_AUDIT_CLOUD"
-	auditRegionEnvironment           = "GATEWAY_OPENSTACK_E2E_AUDIT_REGION"
-	auditMicroversionEnvironment     = "GATEWAY_OPENSTACK_E2E_AUDIT_OCTAVIA_MICROVERSION"
-	dedicatedRunAnnotation           = "e2e.gateway-api-openstack.io/run-id"
-	testNamespacePrefix              = "gateway-api-openstack-e2e-"
-	defaultRestartMode               = "cold"
-	defaultTimeout                   = 45 * time.Minute
-	maximumTimeout                   = 50 * time.Minute
-	defaultPollInterval              = 5 * time.Second
-	defaultHTTPTimeout               = 10 * time.Second
-	defaultNoOpWindow                = 30 * time.Second
-	defaultAuditMicroversion         = "2.5"
-	minimumRunIDLength               = 8
-	maximumRunIDLength               = 32
+	enableEnvironment                    = "GATEWAY_OPENSTACK_E2E"
+	projectModeEnvironment               = "GATEWAY_OPENSTACK_E2E_PROJECT_MODE"
+	dedicatedProjectEnvironment          = "GATEWAY_OPENSTACK_E2E_DEDICATED_PROJECT"
+	expectedProjectIDEnvironment         = "GATEWAY_OPENSTACK_E2E_EXPECTED_PROJECT_ID"
+	expectedVIPSubnetIDEnvironment       = "GATEWAY_OPENSTACK_E2E_EXPECTED_VIP_SUBNET_ID"
+	expectedMemberSubnetIDEnvironment    = "GATEWAY_OPENSTACK_E2E_EXPECTED_MEMBER_SUBNET_ID"
+	expectedExternalNetworkIDEnvironment = "GATEWAY_OPENSTACK_E2E_EXPECTED_EXTERNAL_NETWORK_ID"
+	controllerCloudsSecretEnvironment    = "GATEWAY_OPENSTACK_E2E_CONTROLLER_CLOUDS_SECRET"
+	runIDEnvironment                     = "GATEWAY_OPENSTACK_E2E_RUN_ID"
+	namespaceEnvironment                 = "GATEWAY_OPENSTACK_E2E_NAMESPACE"
+	kubeconfigEnvironment                = "GATEWAY_OPENSTACK_E2E_KUBECONFIG"
+	kubeContextEnvironment               = "GATEWAY_OPENSTACK_E2E_CONTEXT"
+	controllerNameEnvironment            = "GATEWAY_OPENSTACK_E2E_CONTROLLER_NAME"
+	controllerNamespaceEnvironment       = "GATEWAY_OPENSTACK_E2E_CONTROLLER_NAMESPACE"
+	controllerDeploymentEnvironment      = "GATEWAY_OPENSTACK_E2E_CONTROLLER_DEPLOYMENT"
+	controllerContainerEnvironment       = "GATEWAY_OPENSTACK_E2E_CONTROLLER_CONTAINER"
+	controllerReplicasEnvironment        = "GATEWAY_OPENSTACK_E2E_CONTROLLER_REPLICAS"
+	controllerImageDigestEnvironment     = "GATEWAY_OPENSTACK_E2E_CONTROLLER_IMAGE_DIGEST"
+	controllerRevisionEnvironment        = "GATEWAY_OPENSTACK_E2E_CONTROLLER_REVISION"
+	leaderLeaseEnvironment               = "GATEWAY_OPENSTACK_E2E_LEASE_NAME"
+	backendImageEnvironment              = "GATEWAY_OPENSTACK_E2E_BACKEND_IMAGE"
+	artifactDirectoryEnvironment         = "GATEWAY_OPENSTACK_E2E_ARTIFACT_DIR"
+	restartModeEnvironment               = "GATEWAY_OPENSTACK_E2E_RESTART_MODE"
+	timeoutEnvironment                   = "GATEWAY_OPENSTACK_E2E_TIMEOUT"
+	pollIntervalEnvironment              = "GATEWAY_OPENSTACK_E2E_POLL_INTERVAL"
+	httpTimeoutEnvironment               = "GATEWAY_OPENSTACK_E2E_HTTP_TIMEOUT"
+	noOpWindowEnvironment                = "GATEWAY_OPENSTACK_E2E_NOOP_WINDOW"
+	auditEnableEnvironment               = "GATEWAY_OPENSTACK_E2E_AUDIT"
+	auditBinaryEnvironment               = "GATEWAY_OPENSTACK_E2E_AUDIT_BINARY"
+	clusterIDEnvironment                 = "GATEWAY_OPENSTACK_E2E_CLUSTER_ID"
+	auditCloudsYAMLEnvironment           = "GATEWAY_OPENSTACK_E2E_AUDIT_CLOUDS_YAML"
+	auditCloudEnvironment                = "GATEWAY_OPENSTACK_E2E_AUDIT_CLOUD"
+	auditRegionEnvironment               = "GATEWAY_OPENSTACK_E2E_AUDIT_REGION"
+	auditMicroversionEnvironment         = "GATEWAY_OPENSTACK_E2E_AUDIT_OCTAVIA_MICROVERSION"
+	dedicatedRunAnnotation               = "e2e.gateway-api-openstack.io/run-id"
+	testNamespacePrefix                  = "gateway-api-openstack-e2e-"
+	defaultRestartMode                   = "cold"
+	defaultTimeout                       = 45 * time.Minute
+	maximumTimeout                       = 50 * time.Minute
+	defaultPollInterval                  = 5 * time.Second
+	defaultHTTPTimeout                   = 10 * time.Second
+	defaultNoOpWindow                    = 30 * time.Second
+	defaultAuditMicroversion             = "2.5"
+	sharedExternalNetworkNone            = "none"
+	testIdentityPrefix                   = "gao-e2e-"
+	minimumRunIDLength                   = 8
+	maximumRunIDLength                   = 32
 )
 
 var (
@@ -78,6 +86,23 @@ var (
 )
 
 type environmentReader func(string) string
+
+type projectMode string
+
+const (
+	projectModeDedicated projectMode = "dedicated"
+	projectModeShared    projectMode = "shared"
+)
+
+type projectConfig struct {
+	mode                      projectMode
+	expectedProjectID         string
+	expectedVIPSubnetID       string
+	expectedMemberSubnetID    string
+	expectedExternalNetworkID string
+	externalNetworkSet        bool
+	controllerCloudsSecret    string
+}
 
 type e2eConfig struct {
 	runID                 string
@@ -99,6 +124,7 @@ type e2eConfig struct {
 	pollInterval          time.Duration
 	httpTimeout           time.Duration
 	noOpWindow            time.Duration
+	project               projectConfig
 	audit                 auditConfig
 }
 
@@ -149,16 +175,53 @@ func loadE2EConfig(getenv environmentReader) (e2eConfig, bool, error) {
 	if config.noOpWindow, err = parseDurationOrDefault(getenv(noOpWindowEnvironment), noOpWindowEnvironment, defaultNoOpWindow); err != nil {
 		return e2eConfig{}, true, err
 	}
-	if config.audit, err = loadAuditConfig(getenv); err != nil {
+	if config.project, err = loadProjectConfig(getenv); err != nil {
 		return e2eConfig{}, true, err
 	}
-	if err := requireExactTrue(getenv(dedicatedProjectEnvironment), dedicatedProjectEnvironment); err != nil {
+	if config.audit, err = loadAuditConfig(getenv); err != nil {
 		return e2eConfig{}, true, err
 	}
 	if err := config.validate(); err != nil {
 		return e2eConfig{}, true, err
 	}
 	return config, true, nil
+}
+
+func loadProjectConfig(getenv environmentReader) (projectConfig, error) {
+	modeValue := getenv(projectModeEnvironment)
+	legacyValue := getenv(dedicatedProjectEnvironment)
+	if modeValue == "" {
+		if err := requireExactTrue(legacyValue, dedicatedProjectEnvironment); err != nil {
+			return projectConfig{}, fmt.Errorf("%s must be set to dedicated or shared, or the legacy dedicated-project acknowledgement must be exactly true", projectModeEnvironment)
+		}
+		return projectConfig{mode: projectModeDedicated}, nil
+	}
+
+	config := projectConfig{mode: projectMode(modeValue)}
+	switch config.mode {
+	case projectModeDedicated:
+		if err := requireExactTrue(legacyValue, dedicatedProjectEnvironment); err != nil {
+			return projectConfig{}, err
+		}
+	case projectModeShared:
+		if legacyValue != "" && legacyValue != "false" {
+			return projectConfig{}, fmt.Errorf("%s must be unset or exactly false in shared-project mode", dedicatedProjectEnvironment)
+		}
+		config.expectedProjectID = strings.TrimSpace(getenv(expectedProjectIDEnvironment))
+		config.expectedVIPSubnetID = strings.TrimSpace(getenv(expectedVIPSubnetIDEnvironment))
+		config.expectedMemberSubnetID = strings.TrimSpace(getenv(expectedMemberSubnetIDEnvironment))
+		externalNetwork := strings.TrimSpace(getenv(expectedExternalNetworkIDEnvironment))
+		config.externalNetworkSet = externalNetwork != ""
+		if externalNetwork == sharedExternalNetworkNone {
+			config.expectedExternalNetworkID = ""
+		} else {
+			config.expectedExternalNetworkID = externalNetwork
+		}
+		config.controllerCloudsSecret = strings.TrimSpace(getenv(controllerCloudsSecretEnvironment))
+	default:
+		return projectConfig{}, fmt.Errorf("%s must be exactly dedicated or shared", projectModeEnvironment)
+	}
+	return config, nil
 }
 
 func loadAuditConfig(getenv environmentReader) (auditConfig, error) {
@@ -247,6 +310,55 @@ func (c e2eConfig) validate() error {
 	}
 	if err := c.audit.validate(); err != nil {
 		return err
+	}
+	if err := c.project.validate(c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c projectConfig) validate(config e2eConfig) error {
+	if c.mode == projectModeDedicated {
+		return nil
+	}
+	if c.mode != projectModeShared {
+		return fmt.Errorf("project mode is invalid")
+	}
+	for _, item := range []struct {
+		name  string
+		value string
+	}{
+		{name: expectedProjectIDEnvironment, value: c.expectedProjectID},
+		{name: expectedVIPSubnetIDEnvironment, value: c.expectedVIPSubnetID},
+		{name: expectedMemberSubnetIDEnvironment, value: c.expectedMemberSubnetID},
+		{name: controllerCloudsSecretEnvironment, value: c.controllerCloudsSecret},
+	} {
+		if item.value == "" {
+			return fmt.Errorf("%s must not be empty in shared-project mode", item.name)
+		}
+	}
+	if !c.externalNetworkSet {
+		return fmt.Errorf("%s must be an OpenStack network ID or exactly %q in shared-project mode", expectedExternalNetworkIDEnvironment, sharedExternalNetworkNone)
+	}
+	if len(validation.IsDNS1123Subdomain(c.controllerCloudsSecret)) != 0 {
+		return fmt.Errorf("%s must be a DNS subdomain", controllerCloudsSecretEnvironment)
+	}
+	if !config.audit.enabled {
+		return fmt.Errorf("%s must be exactly true in shared-project mode", auditEnableEnvironment)
+	}
+	if config.audit.cloudsYAML == "" || config.audit.cloud == "" || config.audit.region == "" {
+		return fmt.Errorf("shared-project mode requires explicit audit clouds.yaml, cloud, and region settings")
+	}
+	expectedIdentity := testIdentityPrefix + config.runID
+	_, controllerPath, found := strings.Cut(config.controllerName, "/")
+	if !found || controllerPath != expectedIdentity {
+		return fmt.Errorf("%s must end with the exact run identity in shared-project mode", controllerNameEnvironment)
+	}
+	if config.audit.clusterID != expectedIdentity {
+		return fmt.Errorf("%s must be the exact run identity in shared-project mode", clusterIDEnvironment)
+	}
+	if config.controllerNamespace != "openstack-gateway-e2e-"+config.runID {
+		return fmt.Errorf("%s must be derived from the run ID in shared-project mode", controllerNamespaceEnvironment)
 	}
 	return nil
 }

@@ -605,6 +605,9 @@ func (s *phase2Suite) deleteMarkedAndWait(ctx context.Context, object client.Obj
 }
 
 func (s *phase2Suite) runOwnershipAudit(ctx context.Context, requireEmpty bool, fingerprint *[32]byte) (auditSummary, error) {
+	if err := s.verifyAuthenticatedSharedProject(ctx); err != nil {
+		return auditSummary{}, err
+	}
 	arguments := []string{
 		"--controller-name=" + s.config.controllerName,
 		"--cluster-id=" + s.config.audit.clusterID,
@@ -646,7 +649,7 @@ func (s *phase2Suite) runOwnershipAudit(ctx context.Context, requireEmpty bool, 
 		return auditSummary{}, fmt.Errorf("ownership audit reported unresolved findings")
 	}
 	if requireEmpty && report.Summary != (audit.Summary{}) {
-		return auditSummary{}, fmt.Errorf("dedicated-project ownership audit baseline was not empty")
+		return auditSummary{}, fmt.Errorf("run-scoped ownership audit baseline was not empty")
 	}
 	if fingerprint != nil {
 		*fingerprint = ownershipAuditFingerprint(report.Resources)

@@ -48,16 +48,15 @@ import (
 )
 
 const (
-	gatewayClassNamePrefix = "gao-e2e-"
-	backendName            = "backend"
-	gatewayName            = "edge"
-	routeName              = "basic"
-	listenerName           = "http"
-	backendPort            = 8080
-	listenerPort           = 80
-	controllerMetricsPort  = 8080
-	standardChannel        = "standard"
-	emergencyCleanupLimit  = 15 * time.Minute
+	backendName           = "backend"
+	gatewayName           = "edge"
+	routeName             = "basic"
+	listenerName          = "http"
+	backendPort           = 8080
+	listenerPort          = 80
+	controllerMetricsPort = 8080
+	standardChannel       = "standard"
+	emergencyCleanupLimit = 15 * time.Minute
 )
 
 var requiredBundleCRDs = []string{
@@ -72,17 +71,19 @@ type phase2Suite struct {
 	coreRESTClient rest.Interface
 	report         *e2eReport
 
-	httpClient             *http.Client
-	gatewayClassName       string
-	hostname               string
-	createdNamespace       bool
-	createdClass           bool
-	createdGateway         bool
-	createdRoute           bool
-	controllerScaled       bool
-	baselineAudit          *auditSummary
-	activeAudit            *auditSummary
-	activeAuditFingerprint [32]byte
+	httpClient                       *http.Client
+	authenticatedProjectID           authenticatedProjectResolver
+	authenticatedControllerProjectID controllerProjectResolver
+	gatewayClassName                 string
+	hostname                         string
+	createdNamespace                 bool
+	createdClass                     bool
+	createdGateway                   bool
+	createdRoute                     bool
+	controllerScaled                 bool
+	baselineAudit                    *auditSummary
+	activeAudit                      *auditSummary
+	activeAuditFingerprint           [32]byte
 
 	controllerDeploymentUID types.UID
 	namespaceUID            types.UID
@@ -102,11 +103,11 @@ func TestPhase2E2E(t *testing.T) {
 		t.Fatalf("Phase 2 E2E configuration was rejected: %v", err)
 	}
 	if !enabled {
-		t.Skip("set GATEWAY_OPENSTACK_E2E=true and the dedicated-project acknowledgement to run this suite")
+		t.Skip("set GATEWAY_OPENSTACK_E2E=true and configure an explicit OpenStack project mode to run this suite")
 	}
 
 	startedAt := time.Now().UTC()
-	report := newE2EReport(startedAt, config.restartMode, config.controllerRevision, config.controllerImageDigest)
+	report := newE2EReport(startedAt, config.project.mode, config.restartMode, config.controllerRevision, config.controllerImageDigest)
 	markUnimplementedFaultChecks(report)
 
 	ctx, cancel := context.WithTimeout(context.Background(), config.timeout)
@@ -195,8 +196,10 @@ func newPhase2Suite(config e2eConfig, report *e2eReport) (*phase2Suite, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		gatewayClassName: gatewayClassNamePrefix + config.runID,
-		hostname:         "e2e-" + config.runID + ".example.test",
+		authenticatedProjectID:           resolveAuthenticatedAuditProjectID,
+		authenticatedControllerProjectID: resolveAuthenticatedControllerProjectID,
+		gatewayClassName:                 testIdentityPrefix + config.runID,
+		hostname:                         "e2e-" + config.runID + ".example.test",
 	}, nil
 }
 
@@ -333,6 +336,9 @@ func (s *phase2Suite) verifyControllerDeployment(ctx context.Context) error {
 		return err
 	}
 	if err := s.validateControllerDeploymentIdentity(deployment); err != nil {
+		return err
+	}
+	if err := s.verifySharedProjectController(ctx, deployment); err != nil {
 		return err
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != s.config.controllerReplicas {

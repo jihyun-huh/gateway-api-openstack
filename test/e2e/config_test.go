@@ -49,6 +49,9 @@ func TestLoadE2EConfigValidatesSafetyContract(t *testing.T) {
 	if config.namespace != "gateway-api-openstack-e2e-run-1234" || config.controllerReplicas != 2 {
 		t.Fatalf("loadE2EConfig() = %#v", config)
 	}
+	if config.project.mode != projectModeDedicated {
+		t.Fatalf("project mode = %q, want %q", config.project.mode, projectModeDedicated)
+	}
 	if config.audit.enabled {
 		t.Fatal("audit unexpectedly enabled")
 	}
@@ -69,7 +72,8 @@ func TestLoadE2EConfigRejectsUnsafeValues(t *testing.T) {
 		value string
 		want  string
 	}{
-		{name: "shared project", key: dedicatedProjectEnvironment, value: "false", want: "exactly true"},
+		{name: "invalid project mode", key: projectModeEnvironment, value: "SHARED", want: "dedicated or shared"},
+		{name: "project mode has whitespace", key: projectModeEnvironment, value: " shared", want: "dedicated or shared"},
 		{name: "dedicated project acknowledgement has whitespace", key: dedicatedProjectEnvironment, value: " true", want: "exactly true"},
 		{name: "namespace does not include run ID", key: namespaceEnvironment, value: "default", want: namespaceEnvironment},
 		{name: "ambient kubeconfig", key: kubeconfigEnvironment, value: "config", want: kubeconfigEnvironment},
@@ -87,6 +91,62 @@ func TestLoadE2EConfigRejectsUnsafeValues(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environment := validEnvironment()
+			environment[test.key] = test.value
+			_, enabled, err := loadE2EConfig(mapEnvironment(environment))
+			if !enabled || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("loadE2EConfig() enabled = %t, error = %v, want %q", enabled, err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadE2EConfigAcceptsLegacyDedicatedAcknowledgement(t *testing.T) {
+	environment := validEnvironment()
+	delete(environment, projectModeEnvironment)
+	config, enabled, err := loadE2EConfig(mapEnvironment(environment))
+	if err != nil || !enabled {
+		t.Fatalf("loadE2EConfig() enabled = %t, error = %v", enabled, err)
+	}
+	if config.project.mode != projectModeDedicated {
+		t.Fatalf("project mode = %q, want %q", config.project.mode, projectModeDedicated)
+	}
+}
+
+func TestLoadE2EConfigAcceptsSharedProjectSafetyContract(t *testing.T) {
+	environment := validSharedEnvironment()
+	config, enabled, err := loadE2EConfig(mapEnvironment(environment))
+	if err != nil || !enabled {
+		t.Fatalf("loadE2EConfig() enabled = %t, error = %v", enabled, err)
+	}
+	if config.project.mode != projectModeShared || config.project.expectedExternalNetworkID != "" || !config.audit.enabled {
+		t.Fatalf("shared project config = %#v, audit = %#v", config.project, config.audit)
+	}
+}
+
+func TestLoadE2EConfigRejectsIncompleteSharedProjectSafetyContract(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "dedicated acknowledgement", key: dedicatedProjectEnvironment, value: "true", want: "unset or exactly false"},
+		{name: "audit disabled", key: auditEnableEnvironment, value: "false", want: auditEnableEnvironment},
+		{name: "project ID absent", key: expectedProjectIDEnvironment, value: "", want: expectedProjectIDEnvironment},
+		{name: "VIP subnet absent", key: expectedVIPSubnetIDEnvironment, value: "", want: expectedVIPSubnetIDEnvironment},
+		{name: "member subnet absent", key: expectedMemberSubnetIDEnvironment, value: "", want: expectedMemberSubnetIDEnvironment},
+		{name: "external network acknowledgement absent", key: expectedExternalNetworkIDEnvironment, value: "", want: expectedExternalNetworkIDEnvironment},
+		{name: "controller Secret absent", key: controllerCloudsSecretEnvironment, value: "", want: controllerCloudsSecretEnvironment},
+		{name: "audit clouds file absent", key: auditCloudsYAMLEnvironment, value: "", want: "clouds.yaml"},
+		{name: "audit cloud absent", key: auditCloudEnvironment, value: "", want: auditCloudEnvironment},
+		{name: "audit region absent", key: auditRegionEnvironment, value: "", want: "region"},
+		{name: "cluster identity differs", key: clusterIDEnvironment, value: "another-cluster", want: clusterIDEnvironment},
+		{name: "controller name differs", key: controllerNameEnvironment, value: "example.test/another-controller", want: controllerNameEnvironment},
+		{name: "controller namespace differs", key: controllerNamespaceEnvironment, value: "gateway-system", want: controllerNamespaceEnvironment},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := validSharedEnvironment()
 			environment[test.key] = test.value
 			_, enabled, err := loadE2EConfig(mapEnvironment(environment))
 			if !enabled || err == nil || !strings.Contains(err.Error(), test.want) {
@@ -116,6 +176,7 @@ func validEnvironment() map[string]string {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	return map[string]string{
 		enableEnvironment:                "true",
+		projectModeEnvironment:           string(projectModeDedicated),
 		dedicatedProjectEnvironment:      "true",
 		runIDEnvironment:                 "run-1234",
 		namespaceEnvironment:             "gateway-api-openstack-e2e-run-1234",
@@ -132,6 +193,26 @@ func validEnvironment() map[string]string {
 		backendImageEnvironment:          "registry.example.test/e2e/agnhost@" + digest,
 		artifactDirectoryEnvironment:     "/workspace/artifacts/run-1234",
 	}
+}
+
+func validSharedEnvironment() map[string]string {
+	environment := validEnvironment()
+	environment[projectModeEnvironment] = string(projectModeShared)
+	environment[dedicatedProjectEnvironment] = "false"
+	environment[controllerNameEnvironment] = "example.test/gao-e2e-run-1234"
+	environment[controllerNamespaceEnvironment] = "openstack-gateway-e2e-run-1234"
+	environment[auditEnableEnvironment] = "true"
+	environment[auditBinaryEnvironment] = "/workspace/bin/openstack-gateway-audit"
+	environment[clusterIDEnvironment] = "gao-e2e-run-1234"
+	environment[auditCloudsYAMLEnvironment] = "/workspace/clouds.yaml"
+	environment[auditCloudEnvironment] = "openstack-e2e"
+	environment[auditRegionEnvironment] = "RegionOne"
+	environment[expectedProjectIDEnvironment] = "expected-project"
+	environment[expectedVIPSubnetIDEnvironment] = "expected-vip-subnet"
+	environment[expectedMemberSubnetIDEnvironment] = "expected-member-subnet"
+	environment[expectedExternalNetworkIDEnvironment] = sharedExternalNetworkNone
+	environment[controllerCloudsSecretEnvironment] = "openstack-clouds-run-1234"
+	return environment
 }
 
 func mapEnvironment(values map[string]string) environmentReader {

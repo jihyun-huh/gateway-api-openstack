@@ -67,6 +67,10 @@ test-envtest: ## Run controller tests against a real API server and etcd.
 test-e2e-compile: ## Compile the opt-in Phase 2 E2E suite without running it.
 	$(GO) test -tags=e2e -run '^$$' ./test/e2e
 
+.PHONY: test-e2e-unit
+test-e2e-unit: ## Run tagged E2E helper tests without contacting a cluster or cloud.
+	GATEWAY_OPENSTACK_E2E=false $(GO) test -tags=e2e -count=1 ./test/e2e
+
 .PHONY: test-e2e
 test-e2e: build-audit ## Run the opt-in Phase 2 E2E suite against an explicitly selected cloud.
 	@test "$(GATEWAY_OPENSTACK_E2E)" = "true" || { printf 'Set GATEWAY_OPENSTACK_E2E=true to run the Phase 2 E2E suite.\n'; exit 1; }
@@ -107,7 +111,7 @@ lint-fix: ## Apply safe golangci-lint fixes when installed.
 	$(GOLANGCI_LINT) run --fix
 
 .PHONY: verify
-verify: fmt-check vet test test-e2e-compile ## Run the checks required by CI.
+verify: fmt-check vet test test-e2e-unit ## Run the checks required by CI.
 
 .PHONY: tidy
 tidy: ## Update module metadata.
