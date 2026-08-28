@@ -120,13 +120,14 @@ type e2eReport struct {
 	GatewayAPIBundle      string           `json:"gatewayAPIBundle"`
 	ControllerRevision    string           `json:"controllerRevision"`
 	ControllerImageDigest string           `json:"controllerImageDigest"`
+	ProjectMode           projectMode      `json:"projectMode"`
 	RestartMode           string           `json:"restartMode"`
 	Checks                []checkResult    `json:"checks"`
 	Audit                 *auditEvidence   `json:"audit,omitempty"`
 	Metrics               *metricsEvidence `json:"metrics,omitempty"`
 }
 
-func newE2EReport(startedAt time.Time, restartMode, controllerRevision, controllerImageDigest string) *e2eReport {
+func newE2EReport(startedAt time.Time, projectMode projectMode, restartMode, controllerRevision, controllerImageDigest string) *e2eReport {
 	report := &e2eReport{
 		FormatVersion:         reportFormatVersion,
 		Suite:                 "Phase 2 E2E foundations",
@@ -135,6 +136,7 @@ func newE2EReport(startedAt time.Time, restartMode, controllerRevision, controll
 		GatewayAPIBundle:      "v1.6.1 Standard Channel",
 		ControllerRevision:    controllerRevision,
 		ControllerImageDigest: controllerImageDigest,
+		ProjectMode:           projectMode,
 		RestartMode:           restartMode,
 		Checks:                make([]checkResult, 0, len(orderedCheckNames)),
 	}
@@ -226,6 +228,7 @@ func renderMarkdownReport(report *e2eReport) []byte {
 	_, _ = fmt.Fprintf(&output, "Gateway API bundle: %s\n\n", report.GatewayAPIBundle)
 	_, _ = fmt.Fprintf(&output, "Controller revision: `%s`\n\n", report.ControllerRevision)
 	_, _ = fmt.Fprintf(&output, "Controller image digest: `%s`\n\n", report.ControllerImageDigest)
+	_, _ = fmt.Fprintf(&output, "OpenStack project mode: %s\n\n", report.ProjectMode)
 	_, _ = fmt.Fprintf(&output, "Restart mode: %s\n\n", report.RestartMode)
 	_, _ = fmt.Fprintln(&output, "| Check | Result | Notes |")
 	_, _ = fmt.Fprintln(&output, "| --- | --- | --- |")
@@ -275,6 +278,9 @@ func renderMarkdownReport(report *e2eReport) []byte {
 	_, _ = fmt.Fprintln(&output, "\n## Limits")
 	_, _ = fmt.Fprintln(&output)
 	_, _ = fmt.Fprintln(&output, "This artifact contains no raw audit report, Kubernetes or OpenStack resource identifiers, published address, pod name, credentials, or API response body.")
+	if report.ProjectMode == projectModeShared {
+		_, _ = fmt.Fprintln(&output, "Shared-project mode provides run-scoped checks, not an OpenStack authorization boundary. A Passed result does not prove that unrelated resources were inaccessible or that a project-wide inventory had no run-attributable residue.")
+	}
 	return output.Bytes()
 }
 

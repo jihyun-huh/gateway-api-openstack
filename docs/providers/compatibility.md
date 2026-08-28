@@ -1,23 +1,21 @@
 # Amphora compatibility evidence
 
-The controller accepts only Amphora. OVN and vendor providers are out of scope.
-This page records the Amphora environments that have actually been tested. It
-does not claim support beyond that evidence.
+The controller accepts only Amphora.
+OVN and vendor providers are out of scope.
+This page records the Amphora environments that have actually been tested.
+It does not claim support beyond that evidence.
 
-No controller release has a supported environment profile yet. The Phase 0
-probe tested individual Octavia and Neutron operations in one Amphora
-environment, but its exact versions and topology have not been published.
-It did not test controller traffic, recovery, deletion, or Gateway API
-conformance.
+No controller release has a supported environment profile yet.
+The Phase 0 probe tested individual Octavia and Neutron operations in one Amphora environment, but its exact versions and topology have not been published.
+It did not test controller traffic, recovery, deletion, or Gateway API conformance.
 
-The repository includes an [OpenStack E2E test
-guide](../testing-openstack-e2e.md) and a report template. Their presence does
-not change the current evidence level. This page changes only after a report
-contains results from a named controller revision and environment.
+The repository includes an [OpenStack E2E test guide](../testing-openstack-e2e.md) and a report template.
+Their presence does not change the current evidence level.
+This page changes only after a report contains results from a named controller revision and environment.
 
-The project uses `probed`, `verified`, `supported`, and `conformant` as separate
-evidence levels. The definitions are in the roadmap. A higher level is never
-inferred from a lower one.
+The project uses `probed`, `verified`, `supported`, and `conformant` as separate evidence levels.
+The definitions are in the roadmap.
+A higher level is never inferred from a lower one.
 
 ## Evidence matrix
 
@@ -36,29 +34,26 @@ inferred from a lower one.
 
 ## Environment profile
 
-Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md) as
-the environment profile. It records the exact controller artifact, cluster and
-cloud versions, literal Amphora provider and topology, network path, endpoint
-behavior, optional services, quotas, tests, and redacted evidence. A
-compatibility statement applies only to that recorded release and environment.
+Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md) as the environment profile.
+It records the exact controller artifact, cluster and cloud versions, literal Amphora provider and topology, network path, endpoint behavior, optional services, quotas, tests, and redacted evidence.
+A compatibility statement applies only to that recorded release and environment.
 “Works on OpenStack” is not sufficient evidence.
 
 ## Reporting an environment
 
-Use the OpenStack environment report issue template. A report must confirm
-Amphora and explain how Amphora reaches backend members. Publish only
-information you are authorized to share. Remove credentials, tokens, tenant
-identifiers, private addresses, customer names, and other sensitive topology
-details.
+Use the OpenStack environment report issue template.
+A report must confirm Amphora and explain how Amphora reaches backend members.
+Publish only information you are authorized to share.
+Remove credentials, tokens, tenant identifiers, private addresses, customer names, and other sensitive topology details.
 
-Run controller checks only in a disposable, dedicated OpenStack project. Pin
-the controller image by digest and install the Gateway API v1.6.1 Standard
-Channel CRDs. Follow the [E2E test guide](../testing-openstack-e2e.md) for the
-preflight, baseline scenarios, fault result semantics, cleanup order, and leak
-inventory.
+Prefer a disposable, dedicated OpenStack project for controller checks and release evidence.
+The E2E harness also has a guarded shared-project mode for local testing when a dedicated project is unavailable.
+That mode verifies a unique controller scope and exact project and network configuration, but it is not an OpenStack authorization boundary.
+A shared-project report must name the mode and include a reviewed, attributed project-wide inventory difference.
 
-Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md)
-for evidence kept in the repository. Use the
-[conformance gap template](../reports/conformance-gap-template.md) for a local
-gap analysis. Neither template is evidence until it contains actual results
-from the named revision and environment.
+Pin the controller image by digest and install the Gateway API v1.6.1 Standard Channel CRDs.
+Follow the [E2E test guide](../testing-openstack-e2e.md) for the preflight, baseline scenarios, shared-project limits, fault result semantics, cleanup order, and leak inventory.
+
+Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md) for evidence kept in the repository.
+Use the [conformance gap template](../reports/conformance-gap-template.md) for a local gap analysis.
+Neither template is evidence until it contains actual results from the named revision and environment.

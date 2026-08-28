@@ -25,7 +25,7 @@ import (
 )
 
 func TestOverallStatusRequiresBaseline(t *testing.T) {
-	report := newE2EReport(time.Unix(1, 0), "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
+	report := newE2EReport(time.Unix(1, 0), projectModeDedicated, "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
 	if got := overallStatus(report.Checks); got != statusNotRun {
 		t.Fatalf("overallStatus() = %q, want %q", got, statusNotRun)
 	}
@@ -46,7 +46,7 @@ func TestOverallStatusRequiresBaseline(t *testing.T) {
 }
 
 func TestSetCheckRejectsUnsafeSummaryShape(t *testing.T) {
-	report := newE2EReport(time.Now(), "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
+	report := newE2EReport(time.Now(), projectModeDedicated, "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
 	if err := report.setCheck("Gateway status", statusPassed, "line one\nline two"); err == nil {
 		t.Fatal("setCheck() accepted a multiline summary")
 	}
@@ -63,7 +63,7 @@ func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 	directory := filepath.Join(root, "run-1234")
 	revision := strings.Repeat("b", 40)
 	digest := "sha256:" + strings.Repeat("a", 64)
-	report := newE2EReport(time.Unix(1, 0), "cold", revision, digest)
+	report := newE2EReport(time.Unix(1, 0), projectModeShared, "cold", revision, digest)
 	report.CompletedAt = time.Unix(2, 0)
 	if err := report.setCheck("preflight safety validation", statusPassed, checkSummaryPassed); err != nil {
 		t.Fatal(err)
@@ -77,12 +77,12 @@ func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(contents)
-		for _, forbidden := range []string{"secret-token", "project-id", "192.0.2.10", "pod-uid"} {
+		for _, forbidden := range []string{"secret-token", "project-id", "expected-vip-subnet", "expected-member-subnet", "192.0.2.10", "pod-uid"} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s contains forbidden value %q", name, forbidden)
 			}
 		}
-		if !strings.Contains(text, revision) || !strings.Contains(text, digest) {
+		if !strings.Contains(text, revision) || !strings.Contains(text, digest) || !strings.Contains(text, string(projectModeShared)) {
 			t.Fatalf("%s does not contain immutable controller evidence", name)
 		}
 	}

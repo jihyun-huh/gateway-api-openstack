@@ -23,6 +23,30 @@ body:
       placeholder: v0.2.0 or commit SHA
     validations:
       required: true
+  - type: dropdown
+    id: project-mode
+    attributes:
+      label: OpenStack project mode
+      description: >-
+        Dedicated is preferred for release evidence. Shared uses logical
+        run-scoped checks and is not an OpenStack authorization boundary.
+      options:
+        - dedicated
+        - shared
+    validations:
+      required: true
+  - type: textarea
+    id: project-isolation
+    attributes:
+      label: Project and controller isolation
+      description: >-
+        Describe the disposable project, or explain how the shared run used a
+        separate set of Kubernetes resources, controller namespace, identity,
+        RBAC, immutable configuration source binding, independent controller
+        and audit authentication, and reviewed project-wide inventory. Do not
+        include project or network IDs, Kubernetes UIDs, or resourceVersions.
+    validations:
+      required: true
   - type: input
     id: kubernetes
     attributes:
@@ -95,6 +119,9 @@ body:
     id: results
     attributes:
       label: Test results and reproduction details
+      description: >-
+        Include the project mode and describe only redacted evidence. Do not
+        paste clouds.yaml, kubeconfig, project IDs, subnet IDs, or network IDs.
     validations:
       required: true
   - type: checkboxes
@@ -105,4 +132,12 @@ body:
         - label: I am authorized to publish this information.
           required: true
         - label: I removed credentials and private cloud identifiers.
+          required: true
+        - label: >-
+            If I ran controller E2E, I reviewed the redacted project-wide
+            inventory before and after the run and attributed every difference.
+          required: true
+        - label: >-
+            If this was a shared-project run, I did not run quota, fault
+            injection, security group, or destructive recovery cases.
           required: true
