@@ -145,13 +145,9 @@ Phase 2 is not complete. The remaining gates are a complete Gateway graph
 writer, the first controller and fault report from an Amphora environment, a
 public GATEWAY-HTTP gap report, and the ADRs required before Phase 3.
 
-See [the current development priorities](docs/development-priorities.md) for a
-concrete refactoring and evidence backlog, and [ROADMAP.md](ROADMAP.md) for the
-complete phased plan. The
-[Amphora compatibility evidence](docs/providers/compatibility.md) page records
-what has and has not been tested. The [OpenStack E2E test
-guide](docs/testing-openstack-e2e.md) describes how to collect the first
-controller report without treating the unrun template as evidence.
+See [the current development priorities](docs/development-priorities.md) for a concrete refactoring and evidence backlog, and [ROADMAP.md](ROADMAP.md) for the complete phased plan.
+The [Amphora compatibility evidence](docs/providers/compatibility.md) page records what has and has not been tested.
+The [OpenStack E2E test guide](docs/testing-openstack-e2e.md) includes a one-command path for a dedicated Kubernetes cluster and a shared OpenStack project, and it explains how to collect the first controller report without treating the unrun template as evidence.
 
 ## Getting started
 
