@@ -43,11 +43,11 @@ func TestDeleteMarkedAndWaitUsesRunMarkerAndUID(t *testing.T) {
 		Namespace:   "e2e",
 		Name:        routeName,
 		UID:         routeUID,
-		Annotations: map[string]string{dedicatedRunAnnotation: "run-1234"},
+		Annotations: map[string]string{runAnnotation: "run-1234"},
 	}}
 	suite := &phase2Suite{
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build(),
-		config: e2eConfig{runID: "run-1234", pollInterval: time.Millisecond},
+		config: e2eConfig{RunID: "run-1234", PollInterval: time.Millisecond},
 	}
 	object := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "e2e", Name: routeName}}
 	if err := suite.deleteMarkedAndWait(context.Background(), object, &routeUID); err != nil {
@@ -67,11 +67,11 @@ func TestDeleteMarkedAndWaitRefusesForeignObject(t *testing.T) {
 		Namespace:   "e2e",
 		Name:        routeName,
 		UID:         types.UID("foreign-uid"),
-		Annotations: map[string]string{dedicatedRunAnnotation: "different-run"},
+		Annotations: map[string]string{runAnnotation: "different-run"},
 	}}
 	suite := &phase2Suite{
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build(),
-		config: e2eConfig{runID: "run-1234", pollInterval: time.Millisecond},
+		config: e2eConfig{RunID: "run-1234", PollInterval: time.Millisecond},
 	}
 	expectedUID := types.UID("route-uid")
 	object := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "e2e", Name: routeName}}
@@ -96,16 +96,16 @@ func TestEnsureCleanupStopsAtFirstDependencyFailure(t *testing.T) {
 	gatewayClass := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{
 		Name:        "gao-e2e-run-1234",
 		UID:         classUID,
-		Annotations: map[string]string{dedicatedRunAnnotation: "different-run"},
+		Annotations: map[string]string{runAnnotation: "different-run"},
 	}}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name:        "gateway-api-openstack-e2e-run-1234",
 		UID:         namespaceUID,
-		Annotations: map[string]string{dedicatedRunAnnotation: "run-1234"},
+		Annotations: map[string]string{runAnnotation: "run-1234"},
 	}}
 	suite := &phase2Suite{
 		client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(gatewayClass, namespace).Build(),
-		config:           e2eConfig{runID: "run-1234", namespace: namespace.Name, pollInterval: time.Millisecond},
+		config:           e2eConfig{RunID: "run-1234", Namespace: namespace.Name, PollInterval: time.Millisecond},
 		gatewayClassName: gatewayClass.Name,
 		createdClass:     true,
 		createdNamespace: true,
@@ -117,17 +117,5 @@ func TestEnsureCleanupStopsAtFirstDependencyFailure(t *testing.T) {
 	}
 	if err := suite.client.Get(context.Background(), client.ObjectKeyFromObject(namespace), &corev1.Namespace{}); err != nil {
 		t.Fatalf("ensureCleanup() continued past the failed dependency: %v", err)
-	}
-}
-
-func TestBoundedAuditBufferCapsRetainedOutput(t *testing.T) {
-	buffer := boundedAuditBuffer{limit: 4}
-	contents := []byte("sensitive-output")
-	written, err := buffer.Write(contents)
-	if err != nil || written != len(contents) {
-		t.Fatalf("Write() = %d, %v, want %d, nil", written, err, len(contents))
-	}
-	if !buffer.overflow || len(buffer.Bytes()) != 5 {
-		t.Fatalf("bounded buffer overflow = %t, retained = %d, want true, 5", buffer.overflow, len(buffer.Bytes()))
 	}
 }

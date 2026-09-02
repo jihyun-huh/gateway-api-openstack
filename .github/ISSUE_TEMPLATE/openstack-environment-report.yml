@@ -40,11 +40,13 @@ body:
     attributes:
       label: Project and controller isolation
       description: >-
-        Describe the disposable project, or explain how the shared run used a
-        separate set of Kubernetes resources, controller namespace, identity,
-        RBAC, immutable configuration source binding, independent controller
-        and audit authentication, and reviewed project-wide inventory. Do not
-        include project or network IDs, Kubernetes UIDs, or resourceVersions.
+        State who confirmed that the Kubernetes cluster was reserved for E2E.
+        Describe the disposable OpenStack project or the accepted risk of using
+        a shared project. Confirm the unique controller identity and RBAC,
+        immutable source binding, separate authentication checks for the
+        controller and audit configurations, and reviewed project-wide
+        inventory. Do not include project or network IDs, Kubernetes UIDs, or
+        resourceVersions.
     validations:
       required: true
   - type: input
@@ -138,6 +140,6 @@ body:
             inventory before and after the run and attributed every difference.
           required: true
         - label: >-
-            If this was a shared-project run, I did not run quota, fault
+            If this run used a shared project, I did not run quota, fault
             injection, security group, or destructive recovery cases.
           required: true

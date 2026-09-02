@@ -2,14 +2,18 @@ formatVersion: v1alpha1
 kubernetes:
   dedicatedForE2E: true
   kubeconfig: /absolute/path/to/e2e.kubeconfig
-  context: azimuth-e2e
+  context: openstack-e2e
 openstack:
-  projectMode: shared
-  acceptProjectWideCredentialRisk: true
+  projectMode: dedicated
+  dedicatedForE2E: true
+  # For a shared project, set projectMode to shared, remove dedicatedForE2E,
+  # and add acceptProjectWideCredentialRisk: true.
   expectedProjectID: "00000000000000000000000000000000"
   cloud: openstack-e2e
   region: RegionOne
   controllerCloudsYAML: /absolute/path/to/controller-clouds.yaml
+  # Omit auditCloudsYAML to reuse controllerCloudsYAML for the audit.
+  # auditCloudsYAML: /absolute/path/to/audit-clouds.yaml
   vipSubnetID: 11111111-1111-1111-1111-111111111111
   memberSubnetID: 22222222-2222-2222-2222-222222222222
   externalNetworkID: none
@@ -19,3 +23,6 @@ controller:
   sourceRevision: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 backend:
   image: registry.k8s.io/e2e-test-images/agnhost:2.57@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+# Omit artifacts to use _artifacts/e2e/<run-id> below the repository.
+# artifacts:
+#   root: /absolute/path/to/e2e-artifacts

@@ -220,68 +220,91 @@ func writeE2EArtifacts(directory string, report *e2eReport) error {
 
 func renderMarkdownReport(report *e2eReport) []byte {
 	var output bytes.Buffer
-	_, _ = fmt.Fprintln(&output, "# Phase 2 E2E foundations report")
-	_, _ = fmt.Fprintln(&output)
-	_, _ = fmt.Fprintf(&output, "Status: %s\n\n", report.Status)
-	_, _ = fmt.Fprintf(&output, "Started: %s\n\n", report.StartedAt.Format(time.RFC3339))
-	_, _ = fmt.Fprintf(&output, "Completed: %s\n\n", report.CompletedAt.Format(time.RFC3339))
-	_, _ = fmt.Fprintf(&output, "Gateway API bundle: %s\n\n", report.GatewayAPIBundle)
-	_, _ = fmt.Fprintf(&output, "Controller revision: `%s`\n\n", report.ControllerRevision)
-	_, _ = fmt.Fprintf(&output, "Controller image digest: `%s`\n\n", report.ControllerImageDigest)
-	_, _ = fmt.Fprintf(&output, "OpenStack project mode: %s\n\n", report.ProjectMode)
-	_, _ = fmt.Fprintf(&output, "Restart mode: %s\n\n", report.RestartMode)
-	_, _ = fmt.Fprintln(&output, "| Check | Result | Notes |")
-	_, _ = fmt.Fprintln(&output, "| --- | --- | --- |")
-	for _, check := range report.Checks {
+	renderMarkdownReportHeader(&output, report)
+	renderMarkdownCheckTable(&output, report.Checks)
+	renderMarkdownAuditEvidence(&output, report.Audit)
+	renderMarkdownMetricsEvidence(&output, report.Metrics)
+	renderMarkdownLimits(&output, report.ProjectMode)
+	return output.Bytes()
+}
+
+func renderMarkdownReportHeader(output *bytes.Buffer, report *e2eReport) {
+	_, _ = fmt.Fprintln(output, "# Phase 2 E2E foundations report")
+	_, _ = fmt.Fprintln(output)
+	_, _ = fmt.Fprintf(output, "Status: %s\n\n", report.Status)
+	_, _ = fmt.Fprintf(output, "Started: %s\n\n", report.StartedAt.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(output, "Completed: %s\n\n", report.CompletedAt.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(output, "Gateway API bundle: %s\n\n", report.GatewayAPIBundle)
+	_, _ = fmt.Fprintf(output, "Controller revision: `%s`\n\n", report.ControllerRevision)
+	_, _ = fmt.Fprintf(output, "Controller image digest: `%s`\n\n", report.ControllerImageDigest)
+	_, _ = fmt.Fprintf(output, "OpenStack project mode: %s\n\n", report.ProjectMode)
+	_, _ = fmt.Fprintf(output, "Restart mode: %s\n\n", report.RestartMode)
+}
+
+func renderMarkdownCheckTable(output *bytes.Buffer, checks []checkResult) {
+	_, _ = fmt.Fprintln(output, "| Check | Result | Notes |")
+	_, _ = fmt.Fprintln(output, "| --- | --- | --- |")
+	for _, check := range checks {
 		_, _ = fmt.Fprintf(
-			&output,
+			output,
 			"| %s | %s | %s |\n",
 			markdownCell(check.Name),
 			markdownCell(string(check.Status)),
 			markdownCell(check.Summary),
 		)
 	}
-	if report.Audit != nil {
-		_, _ = fmt.Fprintln(&output, "\n## Ownership audit counts")
-		_, _ = fmt.Fprintln(&output)
-		_, _ = fmt.Fprintln(&output, "Only aggregate counts are retained. Resource and object identifiers are omitted.")
-		renderAuditSummary := func(label string, summary *auditSummary) {
-			if summary == nil {
-				return
-			}
-			_, _ = fmt.Fprintf(
-				&output,
-				"\n- %s: assessment=%s, bindings=%d, resources=%d, matched=%d, issues=%d, orphan candidates=%d, stale UIDs=%d, conflicts=%d, unresolved=%d\n",
-				label,
-				summary.Assessment,
-				summary.Bindings,
-				summary.Resources,
-				summary.Matched,
-				summary.KubernetesIssues,
-				summary.OrphanCandidates,
-				summary.StaleUIDs,
-				summary.Conflicts,
-				summary.Unresolved,
-			)
-		}
-		renderAuditSummary("Before the test", report.Audit.Baseline)
-		renderAuditSummary("Active inventory", report.Audit.Active)
-		renderAuditSummary("After leader recovery", report.Audit.AfterLeader)
-		renderAuditSummary("After cold restart", report.Audit.AfterRestart)
-		renderAuditSummary("After cleanup", report.Audit.AfterCleanup)
+}
+
+func renderMarkdownAuditEvidence(output *bytes.Buffer, evidence *auditEvidence) {
+	if evidence == nil {
+		return
 	}
-	if report.Metrics != nil {
-		_, _ = fmt.Fprintln(&output, "\n## Metrics snapshot")
-		_, _ = fmt.Fprintln(&output)
-		_, _ = fmt.Fprintln(&output, "The artifact contains only aggregate values from an allowlist. Labels are omitted.")
+	_, _ = fmt.Fprintln(output, "\n## Ownership audit counts")
+	_, _ = fmt.Fprintln(output)
+	_, _ = fmt.Fprintln(output, "Only aggregate counts are retained. Resource and object identifiers are omitted.")
+	renderMarkdownAuditSummary(output, "Before the test", evidence.Baseline)
+	renderMarkdownAuditSummary(output, "Active inventory", evidence.Active)
+	renderMarkdownAuditSummary(output, "After leader recovery", evidence.AfterLeader)
+	renderMarkdownAuditSummary(output, "After cold restart", evidence.AfterRestart)
+	renderMarkdownAuditSummary(output, "After cleanup", evidence.AfterCleanup)
+}
+
+func renderMarkdownAuditSummary(output *bytes.Buffer, label string, summary *auditSummary) {
+	if summary == nil {
+		return
 	}
-	_, _ = fmt.Fprintln(&output, "\n## Limits")
-	_, _ = fmt.Fprintln(&output)
-	_, _ = fmt.Fprintln(&output, "This artifact contains no raw audit report, Kubernetes or OpenStack resource identifiers, published address, pod name, credentials, or API response body.")
-	if report.ProjectMode == projectModeShared {
-		_, _ = fmt.Fprintln(&output, "Shared-project mode provides run-scoped checks, not an OpenStack authorization boundary. A Passed result does not prove that unrelated resources were inaccessible or that a project-wide inventory had no run-attributable residue.")
+	_, _ = fmt.Fprintf(
+		output,
+		"\n- %s: assessment=%s, bindings=%d, resources=%d, matched=%d, issues=%d, orphan candidates=%d, stale UIDs=%d, conflicts=%d, unresolved=%d\n",
+		label,
+		summary.Assessment,
+		summary.Bindings,
+		summary.Resources,
+		summary.Matched,
+		summary.KubernetesIssues,
+		summary.OrphanCandidates,
+		summary.StaleUIDs,
+		summary.Conflicts,
+		summary.Unresolved,
+	)
+}
+
+func renderMarkdownMetricsEvidence(output *bytes.Buffer, evidence *metricsEvidence) {
+	if evidence == nil {
+		return
 	}
-	return output.Bytes()
+	_, _ = fmt.Fprintln(output, "\n## Metrics snapshot")
+	_, _ = fmt.Fprintln(output)
+	_, _ = fmt.Fprintln(output, "The artifact contains only aggregate values from an allowlist. Labels are omitted.")
+}
+
+func renderMarkdownLimits(output *bytes.Buffer, mode projectMode) {
+	_, _ = fmt.Fprintln(output, "\n## Limits")
+	_, _ = fmt.Fprintln(output)
+	_, _ = fmt.Fprintln(output, "This artifact contains no raw audit report, Kubernetes or OpenStack resource identifiers, published address, pod name, credentials, or API response body.")
+	if mode == projectModeShared {
+		_, _ = fmt.Fprintln(output, "Shared-project mode provides run-scoped checks, not an OpenStack authorization boundary. A Passed result does not prove that unrelated resources were inaccessible or that a project-wide inventory had no run-attributable residue.")
+	}
 }
 
 func overallStatus(checks []checkResult) checkStatus {

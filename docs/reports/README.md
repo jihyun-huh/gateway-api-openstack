@@ -12,13 +12,13 @@ Use these templates:
 Follow the [OpenStack E2E test guide](../testing-openstack-e2e.md) before using the controller report template.
 The guide defines the dedicated and shared project modes, artifact pinning, result meanings, and cleanup order expected by the report.
 Record the project mode, but do not copy expected project, subnet, or network IDs into a report.
-For shared mode, also omit ConfigMap and Secret UIDs, resourceVersions, and Pod template source annotation values.
+For every mode, also omit ConfigMap and Secret UIDs, resourceVersions, and Pod template source annotation values.
 
 Put completed reports in a directory named for the controller release or short commit, then use a short environment or report name.
 Keep raw logs outside Git when they contain private identifiers.
 Link only redacted artifacts that can be retained for as long as the report is used.
 
-For a shared-project run, keep the scoped ownership audit separate from the independent project-wide inventory.
+For a run in a shared project, keep the scoped ownership audit separate from the independent project-wide inventory.
 The audit can return to an empty run scope while unrelated users continue to change the project.
 Record who reviewed and attributed the before and after difference instead of requiring the whole project inventory to be identical.
 
