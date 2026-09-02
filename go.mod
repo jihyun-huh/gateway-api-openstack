@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-logr/logr v1.4.3
-	github.com/gophercloud/gophercloud/v2 v2.13.0
+	github.com/gophercloud/gophercloud/v2 v2.14.0
 	github.com/prometheus/client_golang v1.24.0
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/time v0.15.0
