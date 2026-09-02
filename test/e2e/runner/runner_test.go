@@ -20,11 +20,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,112 +36,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
+	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
-func TestLoadAndResolveExampleConfig(t *testing.T) {
+func TestOpenStackExampleMatchesStrictRunnerSchema(t *testing.T) {
 	repositoryRoot := testRepositoryRoot(t)
-	path, err := filepath.Abs(filepath.Join("..", "shared-project.example.yaml"))
+	config, err := loadFileConfig(filepath.Join(repositoryRoot, "test/e2e/openstack.example.yaml"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("loadFileConfig(example) error = %v", err)
 	}
-	file, err := loadFileConfig(path)
-	if err != nil {
-		t.Fatalf("loadFileConfig() error = %v", err)
-	}
-	config, err := resolveFileConfig(file, resolveOptions{
+	if _, err := resolveFileConfig(config, resolveOptions{
 		repositoryRoot: repositoryRoot,
-		now:            func() time.Time { return time.Date(2026, 9, 1, 12, 34, 56, 0, time.UTC) },
-		random:         bytes.NewReader([]byte{0xaa, 0xbb, 0xcc, 0xdd}),
-	})
-	if err != nil {
-		t.Fatalf("resolveFileConfig() error = %v", err)
-	}
-	if config.runID != "run-20260901-123456-aabbccdd" || config.workloadNamespace != "gateway-api-openstack-e2e-run-20260901-123456-aabbccdd" ||
-		config.controllerNamespace != "openstack-gateway-e2e-run-20260901-123456-aabbccdd" || config.gatewayClassName != "gao-e2e-run-20260901-123456-aabbccdd" ||
-		config.controllerName != "e2e.example.test/gao-e2e-run-20260901-123456-aabbccdd" || config.clusterID != "gao-e2e-run-20260901-123456-aabbccdd" {
-		t.Fatalf("resolved identity = %#v", config)
-	}
-	if config.externalNetworkInput != disabledNetwork || config.externalNetworkID != "" {
-		t.Fatalf("external network input = %q, resolved = %q", config.externalNetworkInput, config.externalNetworkID)
-	}
-	if config.controllerImageDigest != "sha256:"+strings.Repeat("a", 64) {
-		t.Fatalf("controller image digest = %q", config.controllerImageDigest)
-	}
-}
-
-func TestLoadFileConfigIsStrict(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	contents := []byte(`formatVersion: v1alpha1
-unknownField: true
-`)
-	if err := os.WriteFile(path, contents, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadFileConfig(path); err == nil || !strings.Contains(err.Error(), "unknownField") {
-		t.Fatalf("loadFileConfig() error = %v, want strict unknown-field rejection", err)
-	}
-}
-
-func TestResolveFileConfigDerivesRunIdentityAndAuditDefault(t *testing.T) {
-	file := validFileConfig()
-	file.RunID = ""
-	file.OpenStack.AuditCloudsYAML = ""
-	config, err := resolveFileConfig(file, resolveOptions{
-		repositoryRoot: testRepositoryRoot(t),
-		now:            func() time.Time { return time.Date(2026, 9, 1, 12, 34, 56, 0, time.UTC) },
-		random:         bytes.NewReader([]byte{0xaa, 0xbb, 0xcc, 0xdd}),
-	})
-	if err != nil {
-		t.Fatalf("resolveFileConfig() error = %v", err)
-	}
-	if config.runID != "run-20260901-123456-aabbccdd" {
-		t.Fatalf("runID = %q", config.runID)
-	}
-	if config.auditCloudsYAML != file.OpenStack.ControllerCloudsYAML {
-		t.Fatalf("audit clouds path = %q, want controller path", config.auditCloudsYAML)
-	}
-}
-
-func TestResolveFileConfigRejectsMissingSafetyInputs(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*fileConfig)
-		want   string
-	}{
-		{name: "Kubernetes is not dedicated", mutate: func(config *fileConfig) { config.Kubernetes.DedicatedForE2E = false }, want: "dedicatedForE2E"},
-		{name: "project mode is not shared", mutate: func(config *fileConfig) { config.OpenStack.ProjectMode = "dedicated" }, want: "projectMode"},
-		{name: "project credential risk is not accepted", mutate: func(config *fileConfig) { config.OpenStack.AcceptProjectWideCredentialRisk = false }, want: "acceptProjectWideCredentialRisk"},
-		{name: "external network choice is omitted", mutate: func(config *fileConfig) { config.OpenStack.ExternalNetworkID = "" }, want: "externalNetworkID"},
-		{name: "controller image is mutable", mutate: func(config *fileConfig) { config.Controller.Image = "registry.example.test/controller:latest" }, want: "controller.image"},
-		{name: "backend image is mutable", mutate: func(config *fileConfig) { config.Backend.Image = "registry.example.test/agnhost:latest" }, want: "backend.image"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			config := validFileConfig()
-			test.mutate(&config)
-			_, err := resolveFileConfig(config, resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("resolveFileConfig() error = %v, want %q", err, test.want)
-			}
-		})
+		random:         bytes.NewReader([]byte{1, 2, 3, 4}),
+	}); err != nil {
+		t.Fatalf("resolveFileConfig(example) error = %v", err)
 	}
 }
 
 func TestBuildControllerObjectsUsesRunScopedIdentity(t *testing.T) {
-	repositoryRoot := testRepositoryRoot(t)
-	base, err := loadBaseObjects(repositoryRoot)
-	if err != nil {
-		t.Fatalf("loadBaseObjects() error = %v", err)
-	}
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: repositoryRoot})
-	if err != nil {
-		t.Fatal(err)
-	}
-	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
-	if err != nil {
-		t.Fatalf("buildControllerObjects() error = %v", err)
-	}
+	config, _, objects := builtControllerObjects(t)
+	assertRunAnnotations(t, config.RunID, objects)
+	assertRunScopedRBAC(t, config, objects)
+	assertImmutableConfiguration(t, objects)
+	assertControllerEnvironment(t, config, objects.configMap.Data)
+}
+
+func assertRunAnnotations(t *testing.T, runID string, objects controllerObjects) {
+	t.Helper()
 	for name, object := range map[string]interface {
 		GetAnnotations() map[string]string
 	}{
@@ -153,45 +75,70 @@ func TestBuildControllerObjectsUsesRunScopedIdentity(t *testing.T) {
 		"Secret":             objects.secret,
 		"Deployment":         objects.deployment,
 	} {
-		if object.GetAnnotations()[runAnnotation] != config.runID {
-			t.Errorf("%s run annotation = %q", name, object.GetAnnotations()[runAnnotation])
+		if object.GetAnnotations()[controllercontract.RunAnnotation] != runID {
+			t.Errorf("%s run annotation = %q", name, object.GetAnnotations()[controllercontract.RunAnnotation])
 		}
 	}
-	if objects.namespace.Name != config.controllerNamespace || objects.serviceAccount.Namespace != config.controllerNamespace ||
-		objects.clusterRole.Name != config.clusterRoleName || objects.clusterRoleBinding.RoleRef.Name != config.clusterRoleName ||
-		len(objects.clusterRoleBinding.Subjects) != 1 || objects.clusterRoleBinding.Subjects[0].Namespace != config.controllerNamespace {
+}
+
+func assertRunScopedRBAC(t *testing.T, config resolvedConfig, objects controllerObjects) {
+	t.Helper()
+	if objects.namespace.Name != config.ControllerNamespace || objects.serviceAccount.Namespace != config.ControllerNamespace ||
+		objects.clusterRole.Name != config.ClusterRoleName || objects.clusterRoleBinding.RoleRef.Name != config.ClusterRoleName ||
+		len(objects.clusterRoleBinding.Subjects) != 1 || objects.clusterRoleBinding.Subjects[0].Namespace != config.ControllerNamespace {
 		t.Fatalf("run-scoped RBAC objects = %#v", objects)
 	}
+}
+
+func assertImmutableConfiguration(t *testing.T, objects controllerObjects) {
+	t.Helper()
 	if objects.configMap.Immutable == nil || !*objects.configMap.Immutable || objects.secret.Immutable == nil || !*objects.secret.Immutable {
 		t.Fatal("ConfigMap or Secret is mutable")
 	}
-	for name, want := range map[string]string{
-		"GATEWAY_OPENSTACK_CONTROLLER_NAME":     config.controllerName,
-		"GATEWAY_OPENSTACK_CLUSTER_ID":          config.clusterID,
-		"GATEWAY_OPENSTACK_OCTAVIA_PROVIDER":    "amphora",
-		"GATEWAY_OPENSTACK_VIP_SUBNET_ID":       config.vipSubnetID,
-		"GATEWAY_OPENSTACK_MEMBER_SUBNET_ID":    config.memberSubnetID,
-		"GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID": "",
-		"GATEWAY_OPENSTACK_MEMBER_MODE":         "NodePort",
-		"GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE":   "InternalIP",
-		"OS_CLIENT_CONFIG_FILE":                 "/etc/openstack/clouds.yaml",
-		"OS_CLOUD":                              config.cloud,
-		"OS_REGION_NAME":                        config.region,
-	} {
-		if got := objects.configMap.Data[name]; got != want {
+}
+
+func assertControllerEnvironment(t *testing.T, config resolvedConfig, actual map[string]string) {
+	t.Helper()
+	wantEnvironment := controllercontract.Settings{
+		ControllerName: config.ControllerName, ClusterID: config.Audit.ClusterID,
+		VIPSubnetID: config.Project.ExpectedVIPSubnetID, MemberSubnetID: config.Project.ExpectedMemberSubnetID,
+		Cloud: config.Audit.Cloud, Region: config.Audit.Region,
+	}.Environment()
+	for name, want := range wantEnvironment {
+		if got := actual[name]; got != want {
 			t.Errorf("ConfigMap %s = %q, want %q", name, got, want)
 		}
 	}
+}
+
+func TestBuildControllerObjectsUsesImmutableDeploymentContract(t *testing.T) {
+	config, _, objects := builtControllerObjects(t)
 	container := objects.deployment.Spec.Template.Spec.Containers[0]
-	if container.Name != controllerContainerName || container.Image != config.controllerImage || len(container.Command) != 0 || len(container.Env) != 0 ||
+	assertControllerContainer(t, config, objects, container)
+	assertControllerCloudsMount(t, objects, container)
+	assertControllerArgumentsAndMetrics(t, container)
+	assertDeploymentSourceBindings(t, objects)
+}
+
+func assertControllerContainer(t *testing.T, config resolvedConfig, objects controllerObjects, container corev1.Container) {
+	t.Helper()
+	if container.Name != config.ControllerContainer || container.Image != config.ControllerImage || len(container.Command) != 0 || len(container.Env) != 0 ||
 		len(container.EnvFrom) != 1 || container.EnvFrom[0].ConfigMapRef == nil || container.EnvFrom[0].ConfigMapRef.Name != objects.configMap.Name {
 		t.Fatalf("controller container = %#v", container)
 	}
-	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != controllerCloudsMountPath || !container.VolumeMounts[0].ReadOnly ||
+}
+
+func assertControllerCloudsMount(t *testing.T, objects controllerObjects, container corev1.Container) {
+	t.Helper()
+	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != controllercontract.CloudsMountPath || !container.VolumeMounts[0].ReadOnly ||
 		len(objects.deployment.Spec.Template.Spec.Volumes) != 1 || objects.deployment.Spec.Template.Spec.Volumes[0].Secret == nil ||
 		objects.deployment.Spec.Template.Spec.Volumes[0].Secret.SecretName != objects.secret.Name {
 		t.Fatalf("controller clouds mount = %#v, volumes = %#v", container.VolumeMounts, objects.deployment.Spec.Template.Spec.Volumes)
 	}
+}
+
+func assertControllerArgumentsAndMetrics(t *testing.T, container corev1.Container) {
+	t.Helper()
 	for _, argument := range []string{"--leader-elect=true", "--metrics-bind-address=:8080", "--octavia-microversion=2.5"} {
 		if !contains(container.Args, argument) {
 			t.Errorf("controller args %q do not contain %q", container.Args, argument)
@@ -206,7 +153,10 @@ func TestBuildControllerObjectsUsesRunScopedIdentity(t *testing.T) {
 	if metricsPorts != 1 {
 		t.Fatalf("metrics port count = %d, ports = %#v", metricsPorts, container.Ports)
 	}
+}
 
+func assertDeploymentSourceBindings(t *testing.T, objects controllerObjects) {
+	t.Helper()
 	objects.configMap.UID = types.UID("config-uid")
 	objects.configMap.ResourceVersion = "12"
 	objects.secret.UID = types.UID("secret-uid")
@@ -214,13 +164,16 @@ func TestBuildControllerObjectsUsesRunScopedIdentity(t *testing.T) {
 	if err := bindDeploymentSources(objects.deployment, objects.configMap, objects.secret); err != nil {
 		t.Fatal(err)
 	}
-	if got := objects.deployment.Spec.Template.Annotations[controllerConfigSourceAnnotation]; got != "config-uid/12" {
+	if got := objects.deployment.Spec.Template.Annotations[controllercontract.ConfigSourceAnnotation]; got != "config-uid/12" {
 		t.Fatalf("config source annotation = %q", got)
 	}
-	if got := objects.deployment.Spec.Template.Annotations[controllerCloudsSourceAnnotation]; got != "secret-uid/13" {
+	if got := objects.deployment.Spec.Template.Annotations[controllercontract.CloudsSourceAnnotation]; got != "secret-uid/13" {
 		t.Fatalf("clouds source annotation = %q", got)
 	}
+}
 
+func TestBuildControllerObjectsRejectsProtectedArgument(t *testing.T) {
+	config, base, _ := builtControllerObjects(t)
 	base.deployment.Spec.Template.Spec.Containers[0].Args = append(
 		base.deployment.Spec.Template.Spec.Containers[0].Args,
 		"--controller-name=foreign.example.test/controller",
@@ -230,39 +183,54 @@ func TestBuildControllerObjectsUsesRunScopedIdentity(t *testing.T) {
 	}
 }
 
-func TestHarnessEnvironmentUsesResolvedValuesAndDropsInheritedOverrides(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
+func TestBuildControllerObjectsDropsUnexpectedBaseConfigMapData(t *testing.T) {
+	config, base, _ := builtControllerObjects(t)
+	base.configMap.Data["GATEWAY_OPENSTACK_UNREVIEWED"] = "unexpected"
+	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
+	if err != nil {
+		t.Fatalf("buildControllerObjects() error = %v", err)
+	}
+	if _, found := objects.configMap.Data["GATEWAY_OPENSTACK_UNREVIEWED"]; found {
+		t.Fatal("run-scoped ConfigMap retained an unexpected base setting")
+	}
+}
+
+func builtControllerObjects(t *testing.T) (resolvedConfig, baseObjects, controllerObjects) {
+	t.Helper()
+	repositoryRoot := testRepositoryRoot(t)
+	base, err := loadBaseObjects(repositoryRoot)
+	if err != nil {
+		t.Fatalf("loadBaseObjects() error = %v", err)
+	}
+	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: repositoryRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	environment := config.harnessEnvironment()
-	for name, want := range map[string]string{
-		"GATEWAY_OPENSTACK_E2E_PROJECT_MODE":                 "shared",
-		"GATEWAY_OPENSTACK_E2E_RUN_ID":                       config.runID,
-		"GATEWAY_OPENSTACK_E2E_NAMESPACE":                    config.workloadNamespace,
-		"GATEWAY_OPENSTACK_E2E_CONTROLLER_NAME":              config.controllerName,
-		"GATEWAY_OPENSTACK_E2E_CLUSTER_ID":                   config.clusterID,
-		"GATEWAY_OPENSTACK_E2E_EXPECTED_EXTERNAL_NETWORK_ID": "none",
-		"GATEWAY_OPENSTACK_E2E_CONTROLLER_IMAGE_DIGEST":      config.controllerImageDigest,
-		"GATEWAY_OPENSTACK_E2E_AUDIT":                        "true",
-	} {
-		if got := environment[name]; got != want {
-			t.Errorf("environment[%s] = %q, want %q", name, got, want)
-		}
+	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
+	if err != nil {
+		t.Fatalf("buildControllerObjects() error = %v", err)
+	}
+	return config, base, objects
+}
+
+func TestMergeHarnessEnvironmentDropsInheritedOverrides(t *testing.T) {
+	environment := map[string]string{
+		"GATEWAY_OPENSTACK_E2E":                "true",
+		"GATEWAY_OPENSTACK_E2E_RUNTIME_CONFIG": "/private/runtime.json",
 	}
 	merged := mergeHarnessEnvironment(
 		[]string{
 			"PATH=/bin",
 			"GATEWAY_OPENSTACK_E2E=false",
-			"GATEWAY_OPENSTACK_E2E_RUN_ID=foreign",
-			"GATEWAY_OPENSTACK_E2E_AUDIT=false",
+			"GATEWAY_OPENSTACK_E2E_RUNTIME_CONFIG=/foreign/runtime.json",
 			"GATEWAY_OPENSTACK_API_QPS=foreign",
 			"OS_AUTH_URL=https://foreign.example.test",
 		},
 		environment,
 	)
 	values := environmentMap(merged)
-	if values["PATH"] != "/bin" || values["GATEWAY_OPENSTACK_E2E_RUN_ID"] != config.runID || values["GATEWAY_OPENSTACK_E2E_AUDIT"] != "true" {
+	if values["PATH"] != "/bin" || values["GATEWAY_OPENSTACK_E2E"] != "true" ||
+		values["GATEWAY_OPENSTACK_E2E_RUNTIME_CONFIG"] != "/private/runtime.json" {
 		t.Fatalf("merged environment = %#v", values)
 	}
 	if _, found := values["GATEWAY_OPENSTACK_API_QPS"]; found {
@@ -278,53 +246,9 @@ func TestPreflightKubernetesRejectsRunIdentityCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tests := []struct {
-		name    string
-		objects []client.Object
-		wantErr bool
-	}{
-		{name: "empty cluster"},
-		{
-			name: "workload Namespace exists",
-			objects: []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-				Name: config.workloadNamespace,
-			}}},
-			wantErr: true,
-		},
-		{
-			name: "controller Namespace exists",
-			objects: []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-				Name: config.controllerNamespace,
-			}}},
-			wantErr: true,
-		},
-		{
-			name: "GatewayClass name exists",
-			objects: []client.Object{&gatewayv1.GatewayClass{
-				ObjectMeta: metav1.ObjectMeta{Name: config.gatewayClassName},
-				Spec:       gatewayv1.GatewayClassSpec{ControllerName: "another.example.test/controller"},
-			}},
-			wantErr: true,
-		},
-		{
-			name: "controller identity is selected",
-			objects: []client.Object{&gatewayv1.GatewayClass{
-				ObjectMeta: metav1.ObjectMeta{Name: "another-class"},
-				Spec:       gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController(config.controllerName)},
-			}},
-			wantErr: true,
-		},
-	}
-	for _, test := range tests {
+	for _, test := range preflightCollisionCases(config) {
 		t.Run(test.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			if err := corev1.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			if err := gatewayv1.Install(scheme); err != nil {
-				t.Fatal(err)
-			}
-			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(test.objects...).Build()
+			kubeClient := fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(test.objects...).Build()
 			err := preflightKubernetes(context.Background(), kubeClient, config)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("preflightKubernetes() error = %v, wantErr %t", err, test.wantErr)
@@ -333,7 +257,96 @@ func TestPreflightKubernetesRejectsRunIdentityCollisions(t *testing.T) {
 	}
 }
 
+type preflightCollisionCase struct {
+	name    string
+	objects []client.Object
+	wantErr bool
+}
+
+func preflightCollisionCases(config resolvedConfig) []preflightCollisionCase {
+	return []preflightCollisionCase{
+		{name: "empty cluster"},
+		{
+			name: "workload Namespace exists",
+			objects: []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: config.Namespace,
+			}}},
+			wantErr: true,
+		},
+		{
+			name: "controller Namespace exists",
+			objects: []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: config.ControllerNamespace,
+			}}},
+			wantErr: true,
+		},
+		{
+			name:    "ClusterRole exists",
+			objects: []client.Object{&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: config.ClusterRoleName}}},
+			wantErr: true,
+		},
+		{
+			name:    "ClusterRoleBinding exists",
+			objects: []client.Object{&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: config.ClusterRoleBindingName}}},
+			wantErr: true,
+		},
+		{
+			name: "GatewayClass name exists",
+			objects: []client.Object{&gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: config.GatewayClassName},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: "another.example.test/controller"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "controller identity is selected",
+			objects: []client.Object{&gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "another-class"},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController(config.ControllerName)},
+			}},
+			wantErr: true,
+		},
+	}
+}
+
 func TestPreflightOpenStackAuthenticatesBothCredentialsBeforeAudit(t *testing.T) {
+	fixture := newPreflightCredentialsFixture(t)
+	if err := preflightOpenStack(
+		context.Background(), fixture.config, fixture.controllerClouds, fixture.authenticate, fixture.runAudit,
+	); err != nil {
+		t.Fatalf("preflightOpenStack() error = %v", err)
+	}
+	fixture.assertSuccess(t)
+}
+
+func TestPreflightOpenStackRejectsAuditProjectMismatchWithoutRunningAudit(t *testing.T) {
+	fixture := newPreflightCredentialsFixture(t)
+	authenticationCalls := 0
+	authenticate := func(context.Context, string, string, string, string) (string, error) {
+		authenticationCalls++
+		if authenticationCalls == 2 {
+			return "another-project", nil
+		}
+		return fixture.config.Project.ExpectedProjectID, nil
+	}
+	err := preflightOpenStack(context.Background(), fixture.config, fixture.controllerClouds, authenticate, fixture.runAudit)
+	if err == nil || fixture.auditCalls != 0 || strings.Contains(err.Error(), fixture.config.Project.ExpectedProjectID) ||
+		strings.Contains(err.Error(), "another-project") {
+		t.Fatalf("preflightOpenStack() mismatch error = %v, audit calls = %d", err, fixture.auditCalls)
+	}
+}
+
+type preflightCredentialsFixture struct {
+	config             resolvedConfig
+	controllerClouds   []byte
+	auditClouds        []byte
+	authenticatedPaths []string
+	auditCalls         int
+	auditCallbackPath  string
+}
+
+func newPreflightCredentialsFixture(t *testing.T) *preflightCredentialsFixture {
+	t.Helper()
 	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -348,145 +361,112 @@ func TestPreflightOpenStackAuthenticatesBothCredentialsBeforeAudit(t *testing.T)
     region_name: RegionOne
     verify: true
 `)
-	authenticatedPaths := make([]string, 0, 2)
-	auditCalls := 0
-	authenticate := func(_ context.Context, path string, cloud string, region string) (string, error) {
-		if cloud != config.cloud || region != config.region {
-			t.Fatalf("authenticate cloud = %q, region = %q", cloud, region)
-		}
-		authenticatedPaths = append(authenticatedPaths, path)
-		if len(authenticatedPaths) == 1 {
-			contents, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(contents, controllerClouds) || path == config.controllerCloudsYAML {
-				t.Fatal("controller credential was not authenticated from an isolated exact copy")
-			}
-		}
-		return config.expectedProjectID, nil
-	}
-	runAudit := func(_ context.Context, got resolvedConfig, environment []string) error {
-		auditCalls++
-		if got.runID != config.runID {
-			t.Fatalf("audit config run ID = %q", got.runID)
-		}
-		for _, entry := range environment {
-			if strings.HasPrefix(entry, "OS_") || strings.HasPrefix(entry, "GATEWAY_OPENSTACK_") {
-				t.Fatalf("audit environment retained %q", entry)
-			}
-		}
-		return nil
-	}
-	if err := preflightOpenStack(context.Background(), config, controllerClouds, authenticate, runAudit); err != nil {
-		t.Fatalf("preflightOpenStack() error = %v", err)
-	}
-	if len(authenticatedPaths) != 2 || authenticatedPaths[1] != config.auditCloudsYAML || auditCalls != 1 {
-		t.Fatalf("authenticated paths = %#v, audit calls = %d", authenticatedPaths, auditCalls)
-	}
-
-	auditCalls = 0
-	authenticate = func(_ context.Context, path string, _ string, _ string) (string, error) {
-		if path == config.auditCloudsYAML {
-			return "another-project", nil
-		}
-		return config.expectedProjectID, nil
-	}
-	err = preflightOpenStack(context.Background(), config, controllerClouds, authenticate, runAudit)
-	if err == nil || auditCalls != 0 || strings.Contains(err.Error(), config.expectedProjectID) || strings.Contains(err.Error(), "another-project") {
-		t.Fatalf("preflightOpenStack() mismatch error = %v, audit calls = %d", err, auditCalls)
-	}
-}
-
-func TestValidateControllerCloudsYAMLRejectsUnsafeOrUnsupportedInputs(t *testing.T) {
-	valid := `clouds:
-  openstack-e2e:
-    auth_type: v3applicationcredential
-    auth:
-      auth_url: https://keystone.example.test/v3
-      application_credential_id: controller-id
-      application_credential_secret: sensitive-sentinel
-    verify: true
-`
-	if err := validateControllerCloudsYAML([]byte(valid), "openstack-e2e"); err != nil {
-		t.Fatalf("validateControllerCloudsYAML() error = %v", err)
-	}
-	for _, test := range []struct {
-		name   string
-		mutate func(string) string
-	}{
-		{name: "TLS verification disabled", mutate: func(value string) string {
-			return strings.Replace(value, "    verify: true\n", "    verify: false\n", 1)
-		}},
-		{name: "auxiliary CA", mutate: func(value string) string {
-			return strings.Replace(value, "    verify: true\n", "    verify: true\n    cacert: /etc/openstack/ca.crt\n", 1)
-		}},
-		{name: "password auth", mutate: func(value string) string {
-			return strings.Replace(value, "    auth_type: v3applicationcredential\n", "    auth_type: password\n", 1)
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			contents := test.mutate(valid)
-			err := validateControllerCloudsYAML([]byte(contents), "openstack-e2e")
-			if err == nil || strings.Contains(err.Error(), "sensitive-sentinel") {
-				t.Fatalf("validateControllerCloudsYAML() error = %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateEmptyOwnershipAudit(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-	if err != nil {
+	auditClouds := bytes.ReplaceAll(controllerClouds, []byte("controller-id"), []byte("audit-id"))
+	credentialDirectory := t.TempDir()
+	config.ControllerCloudsYAML = filepath.Join(credentialDirectory, "controller-clouds.yaml")
+	config.Audit.CloudsYAML = filepath.Join(credentialDirectory, "audit-clouds.yaml")
+	if err := os.WriteFile(config.ControllerCloudsYAML, controllerClouds, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	report := audit.Report{
-		FormatVersion: audit.ReportFormatVersion,
-		Assessment:    audit.AssessmentComplete,
-		Scope: audit.ReportScope{
-			ControllerName: config.controllerName,
-			ClusterID:      config.clusterID,
-		},
+	if err := os.WriteFile(config.Audit.CloudsYAML, auditClouds, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if err := validateEmptyOwnershipAudit(report, config); err != nil {
-		t.Fatalf("validateEmptyOwnershipAudit() error = %v", err)
-	}
-	report.Summary.OpenStackResources = 1
-	if err := validateEmptyOwnershipAudit(report, config); err == nil {
-		t.Fatal("validateEmptyOwnershipAudit() accepted a nonempty scope")
+	return &preflightCredentialsFixture{
+		config: config, controllerClouds: controllerClouds, auditClouds: auditClouds,
+		authenticatedPaths: make([]string, 0, 2),
 	}
 }
 
-func TestBoundedBufferCapsRetainedAuditOutput(t *testing.T) {
-	buffer := boundedBuffer{limit: 4}
-	contents := []byte("sensitive-output")
-	if written, err := buffer.Write(contents); err != nil || written != len(contents) {
-		t.Fatalf("boundedBuffer.Write() = %d, %v", written, err)
+func (f *preflightCredentialsFixture) authenticate(
+	_ context.Context,
+	path string,
+	cloud string,
+	region string,
+	microversion string,
+) (string, error) {
+	if err := f.validateAuthenticationOptions(cloud, region, microversion); err != nil {
+		return "", err
 	}
-	if !buffer.overflow || len(buffer.Bytes()) != 5 {
-		t.Fatalf("bounded buffer overflow = %t, retained = %d", buffer.overflow, len(buffer.Bytes()))
+	f.authenticatedPaths = append(f.authenticatedPaths, path)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if err := f.validateCredentialCopy(path, contents); err != nil {
+		return "", err
+	}
+	if f.authenticatingAuditCredential() {
+		return f.config.Project.ExpectedProjectID, os.WriteFile(
+			f.config.Audit.CloudsYAML,
+			[]byte("changed after authentication\n"),
+			0o600,
+		)
+	}
+	return f.config.Project.ExpectedProjectID, nil
+}
+
+func (f *preflightCredentialsFixture) validateAuthenticationOptions(cloud, region, microversion string) error {
+	if cloud != f.config.Audit.Cloud || region != f.config.Audit.Region || microversion != f.config.Audit.Microversion {
+		return errors.New("authentication options do not match the fixture")
+	}
+	return nil
+}
+
+func (f *preflightCredentialsFixture) validateCredentialCopy(path string, contents []byte) error {
+	want := f.controllerClouds
+	if f.authenticatingAuditCredential() {
+		want = f.auditClouds
+	}
+	if !bytes.Equal(contents, want) {
+		return errors.New("credential copy contents do not match the fixture")
+	}
+	if path == f.config.ControllerCloudsYAML || path == f.config.Audit.CloudsYAML {
+		return errors.New("credential was not authenticated from an isolated exact copy")
+	}
+	return nil
+}
+
+func (f *preflightCredentialsFixture) authenticatingAuditCredential() bool {
+	return len(f.authenticatedPaths) == 2
+}
+
+func (f *preflightCredentialsFixture) runAudit(_ context.Context, got resolvedConfig, environment []string) error {
+	f.auditCalls++
+	if got.RunID != f.config.RunID {
+		return errors.New("audit received another run ID")
+	}
+	f.auditCallbackPath = got.Audit.CloudsYAML
+	if len(f.authenticatedPaths) != 2 || f.auditCallbackPath != f.authenticatedPaths[1] ||
+		f.auditCallbackPath == f.config.Audit.CloudsYAML {
+		return errors.New("audit did not receive the authenticated credential path")
+	}
+	contents, err := os.ReadFile(f.auditCallbackPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(contents, f.auditClouds) {
+		return errors.New("audit did not receive the authenticated credential bytes")
+	}
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "OS_") || strings.HasPrefix(entry, "GATEWAY_OPENSTACK_") {
+			return fmt.Errorf("audit environment retained %q", entry)
+		}
+	}
+	return nil
+}
+
+func (f *preflightCredentialsFixture) assertSuccess(t *testing.T) {
+	t.Helper()
+	if len(f.authenticatedPaths) != 2 || f.auditCalls != 1 {
+		t.Fatalf("authenticated paths = %#v, audit calls = %d", f.authenticatedPaths, f.auditCalls)
+	}
+	if _, err := os.Stat(f.auditCallbackPath); !os.IsNotExist(err) {
+		t.Fatalf("authenticated audit copy remains: %v", err)
 	}
 }
 
 func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := loadBaseObjects(testRepositoryRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
-		if err := install(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
+	config, objects, scheme := controllerInstallFixture(t)
 	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	installed, err := installController(context.Background(), kubeClient, objects, config)
 	if err != nil {
@@ -497,11 +477,11 @@ func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T)
 		t.Fatalf("create order = %#v, deploymentAttempted = %t", kubeClient.creates, installed.deploymentAttempted)
 	}
 	var deployment appsv1.Deployment
-	if err := kubeClient.Get(context.Background(), client.ObjectKey{Namespace: config.controllerNamespace, Name: controllerDeploymentName}, &deployment); err != nil {
+	if err := kubeClient.Get(context.Background(), client.ObjectKey{Namespace: config.ControllerNamespace, Name: config.ControllerDeployment}, &deployment); err != nil {
 		t.Fatal(err)
 	}
-	if deployment.Spec.Template.Annotations[controllerConfigSourceAnnotation] == "" ||
-		deployment.Spec.Template.Annotations[controllerCloudsSourceAnnotation] == "" {
+	if deployment.Spec.Template.Annotations[controllercontract.ConfigSourceAnnotation] == "" ||
+		deployment.Spec.Template.Annotations[controllercontract.CloudsSourceAnnotation] == "" {
 		t.Fatal("Deployment was created without source UID and resourceVersion bindings")
 	}
 	if err := installed.remove(context.Background(), kubeClient); err != nil {
@@ -513,39 +493,87 @@ func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T)
 	}
 }
 
-func TestPartialInstallCanBeRolledBackBeforeDeployment(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := loadBaseObjects(testRepositoryRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
-		if err := install(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
+func TestPartialInstallFailsClosedWhenCreateOutcomeIsNotVisible(t *testing.T) {
+	config, objects, scheme := controllerInstallFixture(t)
 	kubeClient := &recordingClient{
 		Client:         fake.NewClientBuilder().WithScheme(scheme).Build(),
 		failCreateKind: "ConfigMap",
 	}
 	installed, err := installController(context.Background(), kubeClient, objects, config)
-	if err == nil || installed.deploymentAttempted || len(installed.objects) == 0 {
+	if err == nil || installed.deploymentAttempted || len(installed.objects) == 0 || !installed.cleanupBlocked {
 		t.Fatalf("installController() installation = %#v, error = %v", installed, err)
 	}
-	if err := installed.remove(context.Background(), kubeClient); err != nil {
-		t.Fatalf("remove partial installation: %v", err)
+	if err := installed.remove(context.Background(), kubeClient); err == nil {
+		t.Fatal("remove partial installation accepted an ambiguous Create outcome")
 	}
 	var namespace corev1.Namespace
-	if err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.controllerNamespace}, &namespace); client.IgnoreNotFound(err) != nil || err == nil {
-		t.Fatalf("partial Namespace remains after rollback: %v", err)
+	if err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ControllerNamespace}, &namespace); err != nil {
+		t.Fatalf("retained partial Namespace Get() error = %v", err)
+	}
+	if len(kubeClient.deletes) != 0 {
+		t.Fatalf("cleanup deleted objects after an ambiguous Create outcome: %#v", kubeClient.deletes)
+	}
+}
+
+func TestPartialInstallFailsClosedWhenCreateOutcomeCannotBeRead(t *testing.T) {
+	config, objects, scheme := controllerInstallFixture(t)
+	kubeClient := &recordingClient{
+		Client:         fake.NewClientBuilder().WithScheme(scheme).Build(),
+		failCreateKind: "ConfigMap",
+		failGetKind:    "ConfigMap",
+	}
+	installed, err := installController(context.Background(), kubeClient, objects, config)
+	if err == nil || !installed.cleanupBlocked {
+		t.Fatalf("installController() installation = %#v, error = %v", installed, err)
+	}
+	if err := installed.remove(context.Background(), kubeClient); err == nil {
+		t.Fatal("remove partial installation accepted an unreadable Create outcome")
+	}
+	if len(kubeClient.deletes) != 0 {
+		t.Fatalf("cleanup deleted objects after an unreadable Create outcome: %#v", kubeClient.deletes)
+	}
+}
+
+func TestPartialInstallDoesNotAdoptAlreadyExistingObject(t *testing.T) {
+	config, objects, scheme := controllerInstallFixture(t)
+	existing := objects.clusterRole.DeepCopy()
+	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()}
+	installed, err := installController(context.Background(), kubeClient, objects, config)
+	if err == nil || !installed.cleanupBlocked {
+		t.Fatalf("installController() installation = %#v, error = %v", installed, err)
+	}
+	if err := installed.remove(context.Background(), kubeClient); err == nil {
+		t.Fatal("remove partial installation accepted an AlreadyExists collision")
+	}
+	if len(kubeClient.deletes) != 0 {
+		t.Fatalf("cleanup deleted objects after an AlreadyExists collision: %#v", kubeClient.deletes)
+	}
+	var observed rbacv1.ClusterRole
+	if err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ClusterRoleName}, &observed); err != nil {
+		t.Fatalf("pre-existing ClusterRole was removed: %v", err)
+	}
+}
+
+func TestPartialInstallRollsBackObjectCreatedAfterLostResponse(t *testing.T) {
+	config, objects, scheme := controllerInstallFixture(t)
+	kubeClient := &recordingClient{
+		Client:                     fake.NewClientBuilder().WithScheme(scheme).Build(),
+		failCreateAfterPersistKind: "ConfigMap",
+	}
+	installed, err := installController(context.Background(), kubeClient, objects, config)
+	if err == nil || installed.deploymentAttempted || installed.cleanupBlocked {
+		t.Fatalf("installController() installation = %#v, error = %v", installed, err)
+	}
+	if len(installed.objects) != 5 || objectKind(installed.objects[len(installed.objects)-1].object) != "ConfigMap" {
+		t.Fatalf("recorded objects after lost response = %#v", installed.objects)
+	}
+	if err := installed.remove(context.Background(), kubeClient); err != nil {
+		t.Fatalf("remove recovered partial installation: %v", err)
+	}
+	var configMap corev1.ConfigMap
+	key := client.ObjectKey{Namespace: config.ControllerNamespace, Name: objects.configMap.Name}
+	if err := kubeClient.Get(context.Background(), key, &configMap); err == nil || client.IgnoreNotFound(err) != nil {
+		t.Fatalf("ConfigMap from lost response remains after rollback: %v", err)
 	}
 }
 
@@ -574,11 +602,12 @@ func TestInstallationCleanupRefusesChangedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deployment appsv1.Deployment
-	key := client.ObjectKey{Namespace: config.controllerNamespace, Name: controllerDeploymentName}
+	key := client.ObjectKey{Namespace: config.ControllerNamespace, Name: config.ControllerDeployment}
 	if err := kubeClient.Get(context.Background(), key, &deployment); err != nil {
 		t.Fatal(err)
 	}
 	kubeClient.overrideRunAnnotation = "another-run"
+	kubeClient.overrideRunAnnotationKind = "Deployment"
 	if err := installed.remove(context.Background(), kubeClient); err == nil {
 		t.Fatal("installation.remove() accepted a changed run annotation")
 	}
@@ -587,18 +616,242 @@ func TestInstallationCleanupRefusesChangedIdentity(t *testing.T) {
 	}
 }
 
+func TestInstallationCleanupValidatesLaterObjectBeforeAnyDelete(t *testing.T) {
+	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := loadBaseObjects(testRepositoryRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheme := runtime.NewScheme()
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
+		if err := install(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	installed, err := installController(context.Background(), kubeClient, objects, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ConfigMap is late enough in installation order that the old reverse-order
+	// loop deleted the Deployment and Secret before discovering this mismatch.
+	kubeClient.overrideRunAnnotation = "another-run"
+	kubeClient.overrideRunAnnotationKind = "ConfigMap"
+	if err := installed.remove(context.Background(), kubeClient); err == nil {
+		t.Fatal("installation.remove() accepted a later object identity mismatch")
+	}
+	if len(kubeClient.deletes) != 0 {
+		t.Fatalf("cleanup partially deleted objects before later validation failed: %#v", kubeClient.deletes)
+	}
+	var deployment appsv1.Deployment
+	key := client.ObjectKey{Namespace: config.ControllerNamespace, Name: config.ControllerDeployment}
+	if err := kubeClient.Get(context.Background(), key, &deployment); err != nil {
+		t.Fatalf("Deployment was removed before full cleanup validation: %v", err)
+	}
+}
+
+func TestRunUsesTheSameLifecycleForBothProjectModes(t *testing.T) {
+	for _, mode := range []runconfig.ProjectMode{runconfig.ProjectModeDedicated, runconfig.ProjectModeShared} {
+		t.Run(string(mode), func(t *testing.T) {
+			config, kubeClient, options := preparedRunFixture(t, mode)
+			waitCalls := 0
+			harnessCalls := 0
+			options.waitController = func(context.Context, client.Client, resolvedConfig, types.UID) error {
+				waitCalls++
+				return nil
+			}
+			options.executeHarness = func(_ context.Context, got resolvedConfig, _ runOptions) error {
+				harnessCalls++
+				if got.Project.Mode != mode {
+					t.Fatalf("harness project mode = %q, want %q", got.Project.Mode, mode)
+				}
+				return nil
+			}
+			if err := run(context.Background(), config, options); err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if waitCalls != 1 || harnessCalls != 1 {
+				t.Fatalf("wait calls = %d, harness calls = %d", waitCalls, harnessCalls)
+			}
+			var namespace corev1.Namespace
+			err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ControllerNamespace}, &namespace)
+			if client.IgnoreNotFound(err) != nil {
+				t.Fatalf("read controller Namespace after successful cleanup: %v", err)
+			}
+			if err == nil {
+				t.Fatal("successful run retained the controller Namespace")
+			}
+		})
+	}
+}
+
+func TestRunRetainsControllerAfterDeploymentAttempt(t *testing.T) {
+	tests := []struct {
+		name       string
+		failCreate string
+		waitErr    error
+		harnessErr error
+	}{
+		{name: "Deployment create", failCreate: "Deployment"},
+		{name: "readiness", waitErr: errors.New("injected readiness failure")},
+		{name: "harness", harnessErr: errors.New("injected harness failure")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, kubeClient, options := preparedRunFixture(t, runconfig.ProjectModeDedicated)
+			kubeClient.failCreateKind = test.failCreate
+			options.waitController = func(context.Context, client.Client, resolvedConfig, types.UID) error {
+				return test.waitErr
+			}
+			options.executeHarness = func(context.Context, resolvedConfig, runOptions) error {
+				return test.harnessErr
+			}
+			if err := run(context.Background(), config, options); err == nil {
+				t.Fatal("run() succeeded after an injected failure")
+			}
+			if len(kubeClient.deletes) != 0 {
+				t.Fatalf("run() removed recovery objects after Deployment attempt: %#v", kubeClient.deletes)
+			}
+			var namespace corev1.Namespace
+			if err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ControllerNamespace}, &namespace); err != nil {
+				t.Fatalf("retained controller Namespace Get() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRunRollsBackFailureBeforeDeploymentAttempt(t *testing.T) {
+	config, kubeClient, options := preparedRunFixture(t, runconfig.ProjectModeShared)
+	kubeClient.failCreateAfterPersistKind = "ConfigMap"
+	if err := run(context.Background(), config, options); err == nil || !strings.Contains(err.Error(), "removed the partial installation") {
+		t.Fatalf("run() error = %v", err)
+	}
+	var namespace corev1.Namespace
+	err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ControllerNamespace}, &namespace)
+	if err == nil || client.IgnoreNotFound(err) != nil {
+		t.Fatalf("partial controller Namespace remains: %v", err)
+	}
+}
+
+func TestRunRetainsObjectsWhenPreDeploymentCreateOutcomeIsAmbiguous(t *testing.T) {
+	config, kubeClient, options := preparedRunFixture(t, runconfig.ProjectModeShared)
+	kubeClient.failCreateKind = "ConfigMap"
+	err := run(context.Background(), config, options)
+	if err == nil || !strings.Contains(err.Error(), "requires review") || strings.Contains(err.Error(), "removed the partial installation") {
+		t.Fatalf("run() error = %v", err)
+	}
+	if len(kubeClient.deletes) != 0 {
+		t.Fatalf("run() deleted objects after an ambiguous Create outcome: %#v", kubeClient.deletes)
+	}
+	var namespace corev1.Namespace
+	if err := kubeClient.Get(context.Background(), client.ObjectKey{Name: config.ControllerNamespace}, &namespace); err != nil {
+		t.Fatalf("retained controller Namespace Get() error = %v", err)
+	}
+}
+
+func preparedRunFixture(t *testing.T, mode runconfig.ProjectMode) (resolvedConfig, *recordingClient, runOptions) {
+	t.Helper()
+	root := testRepositoryRoot(t)
+	directory := t.TempDir()
+	file := preparedRunFile(t, mode, directory)
+	config, err := resolveFileConfig(file, resolveOptions{repositoryRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditBinary := filepath.Join(directory, "openstack-gateway-audit")
+	if err := os.WriteFile(auditBinary, []byte("synthetic executable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).Build()}
+	return config, kubeClient, preparedRunOptions(root, auditBinary, config, kubeClient)
+}
+
+func preparedRunFile(t *testing.T, mode runconfig.ProjectMode, directory string) fileConfig {
+	t.Helper()
+	file := validFileConfig()
+	file.OpenStack.ProjectMode = mode
+	file.OpenStack.DedicatedForE2E = mode == runconfig.ProjectModeDedicated
+	file.OpenStack.AcceptProjectWideCredentialRisk = mode == runconfig.ProjectModeShared
+	file.Kubernetes.Kubeconfig = filepath.Join(directory, "kubeconfig")
+	file.OpenStack.ControllerCloudsYAML = filepath.Join(directory, "controller-clouds.yaml")
+	file.OpenStack.AuditCloudsYAML = filepath.Join(directory, "audit-clouds.yaml")
+	file.Artifacts.Root = filepath.Join(directory, "artifacts")
+	writePreparedRunFiles(t, file)
+	return file
+}
+
+func writePreparedRunFiles(t *testing.T, file fileConfig) {
+	t.Helper()
+	credential := []byte(`clouds:
+  openstack-e2e:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: https://keystone.example.test/v3
+      application_credential_id: e2e-id
+      application_credential_secret: e2e-secret
+    region_name: RegionOne
+    verify: true
+`)
+	for path, contents := range map[string][]byte{
+		file.Kubernetes.Kubeconfig:          []byte("synthetic kubeconfig"),
+		file.OpenStack.ControllerCloudsYAML: credential,
+		file.OpenStack.AuditCloudsYAML:      credential,
+	} {
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func runnerTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	for _, install := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme,
+		appsv1.AddToScheme,
+		rbacv1.AddToScheme,
+		gatewayv1.Install,
+	} {
+		if err := install(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return scheme
+}
+
+func preparedRunOptions(root, auditBinary string, config resolvedConfig, kubeClient client.Client) runOptions {
+	return runOptions{
+		repositoryRoot: root,
+		auditBinary:    auditBinary,
+		kubeClient:     kubeClient,
+		authenticateProject: func(context.Context, string, string, string, string) (string, error) {
+			return config.Project.ExpectedProjectID, nil
+		},
+		runAudit:       func(context.Context, resolvedConfig, []string) error { return nil },
+		waitController: func(context.Context, client.Client, resolvedConfig, types.UID) error { return nil },
+		executeHarness: func(context.Context, resolvedConfig, runOptions) error { return nil },
+	}
+}
+
 func validFileConfig() fileConfig {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	return fileConfig{
-		FormatVersion: configFormatVersion,
+		FormatVersion: runconfig.FormatVersion,
 		RunID:         "run-20260901",
-		Kubernetes: kubernetesConfig{
+		Kubernetes: runconfig.Kubernetes{
 			DedicatedForE2E: true,
 			Kubeconfig:      "/tmp/e2e.kubeconfig",
 			Context:         "azimuth-e2e",
 		},
-		OpenStack: openStackConfig{
-			ProjectMode:                     sharedProjectMode,
+		OpenStack: runconfig.OpenStack{
+			ProjectMode:                     runconfig.ProjectModeShared,
 			AcceptProjectWideCredentialRisk: true,
 			ExpectedProjectID:               "project-id",
 			Cloud:                           "openstack-e2e",
@@ -607,15 +860,15 @@ func validFileConfig() fileConfig {
 			AuditCloudsYAML:                 "/tmp/audit-clouds.yaml",
 			VIPSubnetID:                     "vip-subnet-id",
 			MemberSubnetID:                  "member-subnet-id",
-			ExternalNetworkID:               disabledNetwork,
+			ExternalNetworkID:               "none",
 		},
-		Controller: controllerConfig{
+		Controller: runconfig.Controller{
 			Domain:         "e2e.example.test",
 			Image:          "registry.example.test/controller@" + digest,
 			SourceRevision: strings.Repeat("b", 40),
 		},
-		Backend:   backendConfig{Image: "registry.example.test/agnhost:1.0@" + digest},
-		Artifacts: artifactsConfig{Root: "/tmp/e2e-artifacts"},
+		Backend:   runconfig.Backend{Image: "registry.example.test/agnhost:1.0@" + digest},
+		Artifacts: runconfig.Artifacts{Root: "/tmp/e2e-artifacts"},
 	}
 }
 
@@ -650,11 +903,14 @@ func contains(values []string, want string) bool {
 
 type recordingClient struct {
 	client.Client
-	creates               []string
-	deletes               []string
-	failCreateKind        string
-	identities            map[string]types.UID
-	overrideRunAnnotation string
+	creates                    []string
+	deletes                    []string
+	failCreateKind             string
+	failCreateAfterPersistKind string
+	failGetKind                string
+	identities                 map[string]types.UID
+	overrideRunAnnotation      string
+	overrideRunAnnotationKind  string
 }
 
 func (c *recordingClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
@@ -675,10 +931,16 @@ func (c *recordingClient) Create(ctx context.Context, object client.Object, opti
 		object.SetResourceVersion("1")
 	}
 	c.creates = append(c.creates, kind)
+	if kind == c.failCreateAfterPersistKind {
+		return errors.New("injected lost create response")
+	}
 	return nil
 }
 
 func (c *recordingClient) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if objectKind(object) == c.failGetKind {
+		return errors.New("injected get failure")
+	}
 	if err := c.Client.Get(ctx, key, object, options...); err != nil {
 		return err
 	}
@@ -688,12 +950,35 @@ func (c *recordingClient) Get(ctx context.Context, key client.ObjectKey, object 
 	if object.GetResourceVersion() == "" {
 		object.SetResourceVersion("1")
 	}
-	if c.overrideRunAnnotation != "" && objectKind(object) == "Deployment" {
+	if c.overrideRunAnnotation != "" && objectKind(object) == c.overrideRunAnnotationKind {
 		annotations := object.GetAnnotations()
-		annotations[runAnnotation] = c.overrideRunAnnotation
+		annotations[controllercontract.RunAnnotation] = c.overrideRunAnnotation
 		object.SetAnnotations(annotations)
 	}
 	return nil
+}
+
+func controllerInstallFixture(t *testing.T) (resolvedConfig, controllerObjects, *runtime.Scheme) {
+	t.Helper()
+	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := loadBaseObjects(testRepositoryRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheme := runtime.NewScheme()
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
+		if err := install(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return config, objects, scheme
 }
 
 func (c *recordingClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {

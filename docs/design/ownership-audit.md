@@ -82,22 +82,22 @@ The audit also does not prove that every current Kubernetes binding has a comple
 These limits make broad project cleanup unsafe.
 Recovery remains a manual, resource by resource process with ownership checks immediately before any mutation.
 
-### Use in a shared project
+### Additional limits in a shared project
 
-The E2E harness can require an empty audit baseline for one exact controller name and cluster ID.
+The E2E runner requires an empty audit baseline for one exact controller name and cluster ID in both project modes.
 This is useful in a project used by several teams because OpenStack resources in another tag scope do not make that inventory noisy.
 A Kubernetes object that carries this controller's binding but has an invalid cluster or project identity is still reported as an issue.
 The scope remains a logical inventory filter, not Keystone or Neutron authorization.
 
 An empty scoped report does not show that the credential cannot access another load balancer, Floating IP, network, or security group.
 It also cannot measure project-wide quota or API contention, find a detached resource after all scope metadata is lost, or attribute concurrent changes made by another user.
-A shared-project E2E run therefore needs a separate redacted inventory before and after the run.
+An E2E run in a shared project therefore needs a separate redacted inventory before and after the run.
 Operators must review and attribute that difference; the audit must not delete or adopt anything to make the inventories match.
 
-The shared-project harness may use a separate credential for this audit.
+The runner may use a separate credential for this audit.
 The OpenStack operator should grant it only the authentication and inventory read permissions the command needs.
 A successful audit authentication does not validate the controller credential, inspect Keystone roles or policy, or prove that the assigned permissions are read-only.
-The harness authenticates both credentials independently and requires both token scopes to resolve to the expected project before it creates the test objects.
+The runner authenticates both configurations independently and requires both token scopes to resolve to the expected project before it creates the test objects.
 
 ## Follow-up decisions
 

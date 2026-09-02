@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -33,13 +32,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
-)
 
-const (
-	controllerConfigSourceAnnotation = "e2e.gateway-api-openstack.io/controller-config-source"
-	controllerCloudsSourceAnnotation = "e2e.gateway-api-openstack.io/controller-clouds-source"
-	controllerCloudsVolumeName       = "openstack-clouds"
-	controllerCloudsMountPath        = "/etc/openstack"
+	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
 type baseObjects struct {
@@ -71,68 +65,50 @@ type installation struct {
 	controllerNamespace string
 	objects             []installedObject
 	deploymentAttempted bool
+	cleanupBlocked      bool
 }
 
 func loadBaseObjects(repositoryRoot string) (baseObjects, error) {
-	var result baseObjects
-	readers := []struct {
-		path   string
-		target any
-	}{
-		{path: "config/default/namespace.yaml", target: &result.namespace},
-		{path: "config/rbac/service_account.yaml", target: &result.serviceAccount},
-		{path: "config/rbac/cluster_role.yaml", target: &result.clusterRole},
-		{path: "config/rbac/cluster_role_binding.yaml", target: &result.clusterRoleBinding},
-		{path: "config/manager/controller-config.yaml", target: &result.configMap},
-		{path: "config/manager/deployment.yaml", target: &result.deployment},
+	namespace, err := loadBaseObject[corev1.Namespace](repositoryRoot, "config/default/namespace.yaml")
+	if err != nil {
+		return baseObjects{}, err
 	}
-	for _, item := range readers {
-		contents, err := os.ReadFile(filepath.Join(repositoryRoot, filepath.FromSlash(item.path)))
-		if err != nil {
-			return baseObjects{}, fmt.Errorf("read controller base %s: %w", item.path, err)
-		}
-		switch target := item.target.(type) {
-		case **corev1.Namespace:
-			object := &corev1.Namespace{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		case **corev1.ServiceAccount:
-			object := &corev1.ServiceAccount{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		case **rbacv1.ClusterRole:
-			object := &rbacv1.ClusterRole{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		case **rbacv1.ClusterRoleBinding:
-			object := &rbacv1.ClusterRoleBinding{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		case **corev1.ConfigMap:
-			object := &corev1.ConfigMap{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		case **appsv1.Deployment:
-			object := &appsv1.Deployment{}
-			if err := yaml.UnmarshalStrict(contents, object); err != nil {
-				return baseObjects{}, fmt.Errorf("decode controller base %s: %w", item.path, err)
-			}
-			*target = object
-		default:
-			return baseObjects{}, fmt.Errorf("unsupported controller base object %s", item.path)
-		}
+	serviceAccount, err := loadBaseObject[corev1.ServiceAccount](repositoryRoot, "config/rbac/service_account.yaml")
+	if err != nil {
+		return baseObjects{}, err
 	}
-	return result, nil
+	clusterRole, err := loadBaseObject[rbacv1.ClusterRole](repositoryRoot, "config/rbac/cluster_role.yaml")
+	if err != nil {
+		return baseObjects{}, err
+	}
+	clusterRoleBinding, err := loadBaseObject[rbacv1.ClusterRoleBinding](repositoryRoot, "config/rbac/cluster_role_binding.yaml")
+	if err != nil {
+		return baseObjects{}, err
+	}
+	configMap, err := loadBaseObject[corev1.ConfigMap](repositoryRoot, "config/manager/controller-config.yaml")
+	if err != nil {
+		return baseObjects{}, err
+	}
+	deployment, err := loadBaseObject[appsv1.Deployment](repositoryRoot, "config/manager/deployment.yaml")
+	if err != nil {
+		return baseObjects{}, err
+	}
+	return baseObjects{
+		namespace: namespace, serviceAccount: serviceAccount, clusterRole: clusterRole,
+		clusterRoleBinding: clusterRoleBinding, configMap: configMap, deployment: deployment,
+	}, nil
+}
+
+func loadBaseObject[T any](repositoryRoot, path string) (*T, error) {
+	contents, err := os.ReadFile(filepath.Join(repositoryRoot, filepath.FromSlash(path)))
+	if err != nil {
+		return nil, fmt.Errorf("read controller base %s: %w", path, err)
+	}
+	object := new(T)
+	if err := yaml.UnmarshalStrict(contents, object); err != nil {
+		return nil, fmt.Errorf("decode controller base %s: %w", path, err)
+	}
+	return object, nil
 }
 
 func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML []byte) (controllerObjects, error) {
@@ -143,108 +119,12 @@ func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML 
 		base.clusterRoleBinding == nil || base.configMap == nil || base.deployment == nil {
 		return controllerObjects{}, fmt.Errorf("controller base is incomplete")
 	}
-
-	namespace := base.namespace.DeepCopy()
-	namespace.Name = config.controllerNamespace
-	setRunAnnotation(namespace, config.runID)
-
-	serviceAccount := base.serviceAccount.DeepCopy()
-	serviceAccount.Name = controllerServiceAccount
-	serviceAccount.Namespace = config.controllerNamespace
-	setRunAnnotation(serviceAccount, config.runID)
-
-	clusterRole := base.clusterRole.DeepCopy()
-	clusterRole.Name = config.clusterRoleName
-	setRunAnnotation(clusterRole, config.runID)
-
-	clusterRoleBinding := base.clusterRoleBinding.DeepCopy()
-	clusterRoleBinding.Name = config.clusterRoleBindingName
-	clusterRoleBinding.RoleRef.Name = clusterRole.Name
-	clusterRoleBinding.Subjects = []rbacv1.Subject{{
-		Kind:      rbacv1.ServiceAccountKind,
-		Name:      serviceAccount.Name,
-		Namespace: config.controllerNamespace,
-	}}
-	setRunAnnotation(clusterRoleBinding, config.runID)
-
-	immutable := true
-	configMap := base.configMap.DeepCopy()
-	configMap.Name = controllerConfigMapName
-	configMap.Namespace = config.controllerNamespace
-	configMap.Immutable = &immutable
-	setRunAnnotation(configMap, config.runID)
-	if configMap.Data == nil {
-		configMap.Data = map[string]string{}
-	}
-	for name, value := range map[string]string{
-		"GATEWAY_OPENSTACK_CONTROLLER_NAME":     config.controllerName,
-		"GATEWAY_OPENSTACK_CLUSTER_ID":          config.clusterID,
-		"GATEWAY_OPENSTACK_OCTAVIA_PROVIDER":    "amphora",
-		"GATEWAY_OPENSTACK_VIP_SUBNET_ID":       config.vipSubnetID,
-		"GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID": config.externalNetworkID,
-		"GATEWAY_OPENSTACK_MEMBER_SUBNET_ID":    config.memberSubnetID,
-		"GATEWAY_OPENSTACK_MEMBER_MODE":         "NodePort",
-		"GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE":   "InternalIP",
-		"OS_CLIENT_CONFIG_FILE":                 controllerCloudsMountPath + "/clouds.yaml",
-		"OS_CLOUD":                              config.cloud,
-		"OS_REGION_NAME":                        config.region,
-	} {
-		configMap.Data[name] = value
-	}
-
-	secret := &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      controllerSecretName,
-			Namespace: config.controllerNamespace,
-		},
-		Immutable: &immutable,
-		Type:      corev1.SecretTypeOpaque,
-		Data:      map[string][]byte{"clouds.yaml": append([]byte(nil), cloudsYAML...)},
-	}
-	setRunAnnotation(secret, config.runID)
-
-	deployment := base.deployment.DeepCopy()
-	deployment.Name = controllerDeploymentName
-	deployment.Namespace = config.controllerNamespace
-	deployment.Spec.Replicas = pointer(controllerReplicas)
-	deployment.Spec.Template.Spec.ServiceAccountName = serviceAccount.Name
-	setRunAnnotation(deployment, config.runID)
-	setRunAnnotation(&deployment.Spec.Template, config.runID)
-	containerIndex := -1
-	for index := range deployment.Spec.Template.Spec.Containers {
-		if deployment.Spec.Template.Spec.Containers[index].Name == controllerContainerName {
-			containerIndex = index
-			break
-		}
-	}
-	if containerIndex < 0 {
-		return controllerObjects{}, fmt.Errorf("controller base deployment lacks container %q", controllerContainerName)
-	}
-	container := &deployment.Spec.Template.Spec.Containers[containerIndex]
-	container.Image = config.controllerImage
-	container.Command = nil
-	container.Env = nil
-	container.EnvFrom = []corev1.EnvFromSource{{
-		ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name}},
-	}}
-	container.VolumeMounts = []corev1.VolumeMount{{
-		Name:      controllerCloudsVolumeName,
-		MountPath: controllerCloudsMountPath,
-		ReadOnly:  true,
-	}}
-	deployment.Spec.Template.Spec.Volumes = []corev1.Volume{{
-		Name: controllerCloudsVolumeName,
-		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-			SecretName:  secret.Name,
-			DefaultMode: pointer(int32(0o440)),
-			Items:       []corev1.KeyToPath{{Key: "clouds.yaml", Path: "clouds.yaml"}},
-		}},
-	}}
-	if err := validateControllerArguments(container.Args); err != nil {
+	namespace, serviceAccount, clusterRole, clusterRoleBinding := buildIdentityObjects(base, config)
+	configMap, secret := buildConfigurationObjects(base.configMap, config, cloudsYAML)
+	deployment, err := buildControllerDeployment(base.deployment, config, serviceAccount, configMap, secret)
+	if err != nil {
 		return controllerObjects{}, err
 	}
-
 	return controllerObjects{
 		namespace:          namespace,
 		serviceAccount:     serviceAccount,
@@ -256,81 +136,146 @@ func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML 
 	}, nil
 }
 
-func validateControllerArguments(arguments []string) error {
-	protected := map[string]struct{}{
-		"clouds-yaml":         {},
-		"cluster-id":          {},
-		"controller-name":     {},
-		"external-network-id": {},
-		"insecure":            {},
-		"member-mode":         {},
-		"member-subnet-id":    {},
-		"node-address-type":   {},
-		"octavia-provider":    {},
-		"openstack-cloud":     {},
-		"openstack-region":    {},
-		"vip-subnet-id":       {},
+func buildIdentityObjects(
+	base baseObjects,
+	config resolvedConfig,
+) (*corev1.Namespace, *corev1.ServiceAccount, *rbacv1.ClusterRole, *rbacv1.ClusterRoleBinding) {
+	namespace := base.namespace.DeepCopy()
+	namespace.Name = config.ControllerNamespace
+	setRunAnnotation(namespace, config.RunID)
+
+	serviceAccount := base.serviceAccount.DeepCopy()
+	serviceAccount.Name = controllerServiceAccount
+	serviceAccount.Namespace = config.ControllerNamespace
+	setRunAnnotation(serviceAccount, config.RunID)
+
+	clusterRole := base.clusterRole.DeepCopy()
+	clusterRole.Name = config.ClusterRoleName
+	setRunAnnotation(clusterRole, config.RunID)
+
+	clusterRoleBinding := base.clusterRoleBinding.DeepCopy()
+	clusterRoleBinding.Name = config.ClusterRoleBindingName
+	clusterRoleBinding.RoleRef.Name = clusterRole.Name
+	clusterRoleBinding.Subjects = []rbacv1.Subject{{
+		Kind:      rbacv1.ServiceAccountKind,
+		Name:      serviceAccount.Name,
+		Namespace: config.ControllerNamespace,
+	}}
+	setRunAnnotation(clusterRoleBinding, config.RunID)
+	return namespace, serviceAccount, clusterRole, clusterRoleBinding
+}
+
+func buildConfigurationObjects(
+	baseConfigMap *corev1.ConfigMap,
+	config resolvedConfig,
+	cloudsYAML []byte,
+) (*corev1.ConfigMap, *corev1.Secret) {
+	immutable := true
+	configMap := baseConfigMap.DeepCopy()
+	configMap.Name = controllerConfigMapName
+	configMap.Namespace = config.ControllerNamespace
+	configMap.Immutable = &immutable
+	setRunAnnotation(configMap, config.RunID)
+	settings := controllercontract.Settings{
+		ControllerName:    config.ControllerName,
+		ClusterID:         config.Audit.ClusterID,
+		VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
+		ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
+		MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
+		Cloud:             config.Audit.Cloud,
+		Region:            config.Audit.Region,
 	}
-	want := map[string]string{
-		"leader-elect":         "--leader-elect=true",
-		"metrics-bind-address": "--metrics-bind-address=:8080",
-		"octavia-microversion": "--octavia-microversion=" + octaviaMicroversion,
+	configMap.Data = settings.Environment()
+
+	secret := &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      config.Project.ControllerCloudsSecret,
+			Namespace: config.ControllerNamespace,
+		},
+		Immutable: &immutable,
+		Type:      corev1.SecretTypeOpaque,
+		Data:      map[string][]byte{"clouds.yaml": append([]byte(nil), cloudsYAML...)},
 	}
-	seen := make(map[string]int, len(want))
-	for _, argument := range arguments {
-		if !strings.HasPrefix(argument, "-") {
-			continue
-		}
-		name := strings.TrimLeft(strings.SplitN(argument, "=", 2)[0], "-")
-		if expected, found := want[name]; found {
-			seen[name]++
-			if argument != expected {
-				return fmt.Errorf("controller base has an unsafe %s argument", name)
-			}
-			continue
-		}
-		if _, found := protected[name]; found {
-			return fmt.Errorf("controller base overrides protected setting %s", name)
+	setRunAnnotation(secret, config.RunID)
+	return configMap, secret
+}
+
+func buildControllerDeployment(
+	baseDeployment *appsv1.Deployment,
+	config resolvedConfig,
+	serviceAccount *corev1.ServiceAccount,
+	configMap *corev1.ConfigMap,
+	secret *corev1.Secret,
+) (*appsv1.Deployment, error) {
+	deployment := baseDeployment.DeepCopy()
+	deployment.Name = config.ControllerDeployment
+	deployment.Namespace = config.ControllerNamespace
+	deployment.Spec.Replicas = pointer(config.ControllerReplicas)
+	deployment.Spec.Template.Spec.ServiceAccountName = serviceAccount.Name
+	setRunAnnotation(deployment, config.RunID)
+	setRunAnnotation(&deployment.Spec.Template, config.RunID)
+	containerIndex := -1
+	for index := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[index].Name == config.ControllerContainer {
+			containerIndex = index
+			break
 		}
 	}
-	for name := range want {
-		if seen[name] != 1 {
-			return fmt.Errorf("controller base must set %s exactly once", name)
-		}
+	if containerIndex < 0 {
+		return nil, fmt.Errorf("controller base deployment lacks container %q", config.ControllerContainer)
 	}
-	return nil
+	container := &deployment.Spec.Template.Spec.Containers[containerIndex]
+	container.Image = config.ControllerImage
+	container.Command = nil
+	container.Env = nil
+	container.EnvFrom = []corev1.EnvFromSource{{
+		ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name}},
+	}}
+	container.VolumeMounts = []corev1.VolumeMount{{
+		Name:      controllerCloudsVolume,
+		MountPath: controllercontract.CloudsMountPath,
+		ReadOnly:  true,
+	}}
+	deployment.Spec.Template.Spec.Volumes = []corev1.Volume{{
+		Name: controllerCloudsVolume,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName:  secret.Name,
+			DefaultMode: pointer(int32(0o440)),
+			Items:       []corev1.KeyToPath{{Key: "clouds.yaml", Path: "clouds.yaml"}},
+		}},
+	}}
+	if err := controllercontract.ValidateArguments(container.Args, config.Audit.Microversion); err != nil {
+		return nil, err
+	}
+	if err := controllercontract.ValidateMetricsPorts(container.Ports); err != nil {
+		return nil, err
+	}
+	return deployment, nil
 }
 
 func bindDeploymentSources(deployment *appsv1.Deployment, configMap *corev1.ConfigMap, secret *corev1.Secret) error {
-	if deployment == nil || configMap == nil || secret == nil || configMap.UID == "" || configMap.ResourceVersion == "" ||
-		secret.UID == "" || secret.ResourceVersion == "" {
+	if deployment == nil || configMap == nil || secret == nil {
 		return fmt.Errorf("controller configuration sources lack API identity")
+	}
+	configSource, err := controllercontract.SourceVersion(configMap.UID, configMap.ResourceVersion)
+	if err != nil {
+		return err
+	}
+	cloudsSource, err := controllercontract.SourceVersion(secret.UID, secret.ResourceVersion)
+	if err != nil {
+		return err
 	}
 	if deployment.Spec.Template.Annotations == nil {
 		deployment.Spec.Template.Annotations = map[string]string{}
 	}
-	deployment.Spec.Template.Annotations[controllerConfigSourceAnnotation] = string(configMap.UID) + "/" + configMap.ResourceVersion
-	deployment.Spec.Template.Annotations[controllerCloudsSourceAnnotation] = string(secret.UID) + "/" + secret.ResourceVersion
+	deployment.Spec.Template.Annotations[controllercontract.ConfigSourceAnnotation] = configSource
+	deployment.Spec.Template.Annotations[controllercontract.CloudsSourceAnnotation] = cloudsSource
 	return nil
 }
 
 func installController(ctx context.Context, kubeClient client.Client, objects controllerObjects, config resolvedConfig) (installation, error) {
-	result := installation{runID: config.runID, controllerNamespace: config.controllerNamespace}
-	create := func(object client.Object) error {
-		if err := kubeClient.Create(ctx, object); err != nil {
-			return err
-		}
-		if object.GetUID() == "" || object.GetResourceVersion() == "" {
-			fresh := object.DeepCopyObject().(client.Object)
-			if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(object), fresh); err != nil {
-				return err
-			}
-			object.SetUID(fresh.GetUID())
-			object.SetResourceVersion(fresh.GetResourceVersion())
-		}
-		result.objects = append(result.objects, installedObject{object: object, uid: object.GetUID()})
-		return nil
-	}
+	result := installation{runID: config.RunID, controllerNamespace: config.ControllerNamespace}
 
 	for _, object := range []client.Object{
 		objects.namespace,
@@ -340,7 +285,7 @@ func installController(ctx context.Context, kubeClient client.Client, objects co
 		objects.configMap,
 		objects.secret,
 	} {
-		if err := create(object); err != nil {
+		if err := result.create(ctx, kubeClient, object); err != nil {
 			return result, fmt.Errorf("create run-scoped controller object: %w", err)
 		}
 	}
@@ -348,31 +293,129 @@ func installController(ctx context.Context, kubeClient client.Client, objects co
 		return result, err
 	}
 	result.deploymentAttempted = true
-	if err := create(objects.deployment); err != nil {
+	if err := result.create(ctx, kubeClient, objects.deployment); err != nil {
 		return result, fmt.Errorf("create run-scoped controller deployment: %w", err)
 	}
 	return result, nil
 }
 
+func (i *installation) create(ctx context.Context, kubeClient client.Client, object client.Object) error {
+	createErr := kubeClient.Create(ctx, object)
+	if createErr != nil {
+		return i.resolveCreateError(ctx, kubeClient, object, createErr)
+	}
+	if err := i.readCreatedIdentityWhenNeeded(ctx, kubeClient, object); err != nil {
+		return err
+	}
+	return i.record(object)
+}
+
+func (i *installation) resolveCreateError(
+	ctx context.Context,
+	kubeClient client.Client,
+	object client.Object,
+	createErr error,
+) error {
+	if apierrors.IsAlreadyExists(createErr) {
+		i.cleanupBlocked = true
+		return fmt.Errorf("create run-scoped controller object collided with a pre-existing object: %w", createErr)
+	}
+	fresh := object.DeepCopyObject().(client.Object)
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(object), fresh); err != nil {
+		i.cleanupBlocked = true
+		return fmt.Errorf("create run-scoped controller object had an unverified outcome: %w", createErr)
+	}
+	if err := i.record(fresh); err != nil {
+		return fmt.Errorf("create run-scoped controller object had an ownership conflict: %w", createErr)
+	}
+	object.SetUID(fresh.GetUID())
+	object.SetResourceVersion(fresh.GetResourceVersion())
+	return fmt.Errorf("create run-scoped controller object returned an error after the exact object became visible: %w", createErr)
+}
+
+func (i *installation) readCreatedIdentityWhenNeeded(ctx context.Context, kubeClient client.Client, object client.Object) error {
+	if object.GetUID() != "" && object.GetResourceVersion() != "" {
+		return nil
+	}
+	fresh := object.DeepCopyObject().(client.Object)
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(object), fresh); err != nil {
+		i.cleanupBlocked = true
+		return fmt.Errorf("read created run-scoped controller object identity: %w", err)
+	}
+	object.SetUID(fresh.GetUID())
+	object.SetResourceVersion(fresh.GetResourceVersion())
+	return nil
+}
+
+func (i *installation) record(object client.Object) error {
+	if object.GetUID() == "" || object.GetAnnotations()[controllercontract.RunAnnotation] != i.runID {
+		i.cleanupBlocked = true
+		return fmt.Errorf("created run-scoped controller object lacks exact ownership identity")
+	}
+	i.objects = append(i.objects, installedObject{object: object, uid: object.GetUID()})
+	return nil
+}
+
 func (i installation) remove(ctx context.Context, kubeClient client.Client) error {
-	for index := len(i.objects) - 1; index >= 0; index-- {
-		installed := i.objects[index]
-		fresh := installed.object.DeepCopyObject().(client.Object)
-		err := kubeClient.Get(ctx, client.ObjectKeyFromObject(installed.object), fresh)
-		if apierrors.IsNotFound(err) {
+	if i.cleanupBlocked {
+		return fmt.Errorf("refuse controller cleanup because a create outcome was not verified")
+	}
+	validated, err := i.validateAllBeforeCleanup(ctx, kubeClient)
+	if err != nil {
+		return err
+	}
+	if err := deleteInstalledObjects(ctx, kubeClient, validated); err != nil {
+		return err
+	}
+	return i.waitForNamespaceRemoval(ctx, kubeClient)
+}
+
+func (i installation) validateAllBeforeCleanup(ctx context.Context, kubeClient client.Client) ([]installedObject, error) {
+	validated := make([]installedObject, 0, len(i.objects))
+	for _, installed := range i.objects {
+		fresh, found, err := i.validateInstalledObject(ctx, kubeClient, installed)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
 			continue
 		}
-		if err != nil {
-			return fmt.Errorf("read run-scoped controller object before cleanup: %w", err)
-		}
-		if fresh.GetUID() == "" || fresh.GetUID() != installed.uid || fresh.GetAnnotations()[runAnnotation] != i.runID {
-			return fmt.Errorf("refuse controller cleanup because object identity changed")
-		}
-		uid := fresh.GetUID()
-		if err := kubeClient.Delete(ctx, fresh, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+		validated = append(validated, fresh)
+	}
+	return validated, nil
+}
+
+func (i installation) validateInstalledObject(
+	ctx context.Context,
+	kubeClient client.Client,
+	installed installedObject,
+) (installedObject, bool, error) {
+	fresh := installed.object.DeepCopyObject().(client.Object)
+	err := kubeClient.Get(ctx, client.ObjectKeyFromObject(installed.object), fresh)
+	if apierrors.IsNotFound(err) {
+		return installedObject{}, false, nil
+	}
+	if err != nil {
+		return installedObject{}, false, fmt.Errorf("read run-scoped controller object before cleanup: %w", err)
+	}
+	if fresh.GetUID() == "" || fresh.GetUID() != installed.uid || fresh.GetAnnotations()[controllercontract.RunAnnotation] != i.runID {
+		return installedObject{}, false, fmt.Errorf("refuse controller cleanup because object identity changed")
+	}
+	return installedObject{object: fresh, uid: fresh.GetUID()}, true, nil
+}
+
+func deleteInstalledObjects(ctx context.Context, kubeClient client.Client, installedObjects []installedObject) error {
+	for index := len(installedObjects) - 1; index >= 0; index-- {
+		installed := installedObjects[index]
+		uid := installed.uid
+		if err := kubeClient.Delete(ctx, installed.object, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete run-scoped controller object: %w", err)
 		}
 	}
+	return nil
+}
+
+func (i installation) waitForNamespaceRemoval(ctx context.Context, kubeClient client.Client) error {
 	return wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
 		var namespace corev1.Namespace
 		err := kubeClient.Get(ctx, client.ObjectKey{Name: i.controllerNamespace}, &namespace)
@@ -388,7 +431,7 @@ func setRunAnnotation(object metav1.Object, runID string) {
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	annotations[runAnnotation] = runID
+	annotations[controllercontract.RunAnnotation] = runID
 	object.SetAnnotations(annotations)
 }
 

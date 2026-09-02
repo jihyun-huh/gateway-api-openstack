@@ -10,10 +10,10 @@ Use these base manifests only in a disposable test project.
 Keep cloud-provider-openstack responsible for Services of type `LoadBalancer`.
 This controller creates separate resources only for its Gateway API objects.
 
-The guarded shared-project mode belongs to the E2E harness, not to the base installation.
-It requires a separate run-scoped controller, immutable configuration and credential objects bound to the Deployment Pod template, independent project checks for the controller and audit credentials, and a read-only ownership audit.
-Do not adapt the base commands below to an existing shared controller.
-Follow the [OpenStack E2E test guide](testing-openstack-e2e.md) when a dedicated project is unavailable.
+The one-command E2E runner is separate from this base installation and accepts a dedicated or shared OpenStack project.
+It creates a run-scoped controller with immutable configuration and credential objects, verifies the controller and audit projects independently, and requires the read-only ownership audit.
+Do not adapt the base commands below to an existing controller for E2E.
+Follow the [OpenStack E2E test guide](testing-openstack-e2e.md) for either project mode.
 
 ## Prerequisites
 

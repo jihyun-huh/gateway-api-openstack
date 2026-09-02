@@ -47,12 +47,12 @@ Publish only information you are authorized to share.
 Remove credentials, tokens, tenant identifiers, private addresses, customer names, and other sensitive topology details.
 
 Prefer a disposable, dedicated OpenStack project for controller checks and release evidence.
-The E2E harness also has a guarded shared-project mode for local testing when a dedicated project is unavailable.
-That mode verifies a unique controller scope and exact project and network configuration, but it is not an OpenStack authorization boundary.
-A shared-project report must name the mode and include a reviewed, attributed project-wide inventory difference.
+The E2E runner accepts either a dedicated or shared project and applies the same run-scoped controller, exact project and network checks, and ownership audit to both.
+Shared mode is not an OpenStack authorization boundary.
+A report for a shared project must name the mode and include a reviewed, attributed project-wide inventory difference.
 
 Pin the controller image by digest and install the Gateway API v1.6.1 Standard Channel CRDs.
-Follow the [E2E test guide](../testing-openstack-e2e.md) for the preflight, baseline scenarios, shared-project limits, fault result semantics, cleanup order, and leak inventory.
+Follow the [E2E test guide](../testing-openstack-e2e.md) for the preflight, baseline scenarios, shared project limits, fault result semantics, cleanup order, and leak inventory.
 
 Use the [OpenStack E2E report template](../reports/openstack-e2e-template.md) for evidence kept in the repository.
 Use the [conformance gap template](../reports/conformance-gap-template.md) for a local gap analysis.

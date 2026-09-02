@@ -12,7 +12,6 @@ SETUP_ENVTEST_VERSION ?= v0.24.1
 ENVTEST_ASSETS_DIR ?= $(abspath $(BINARY_DIR)/envtest)
 ENVTEST_K8S_VERSION ?= 1.36.2
 ENVTEST_RELEASE_INDEX ?= https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/3311c8d50e5c8a976266e08f1f92f827439bd34a/envtest-releases.yaml
-E2E_ARTIFACT_DIR ?= $(if $(GATEWAY_OPENSTACK_E2E_ARTIFACT_DIR),$(GATEWAY_OPENSTACK_E2E_ARTIFACT_DIR),$(abspath _artifacts/e2e/$(GATEWAY_OPENSTACK_E2E_RUN_ID)))
 E2E_CONFIG ?=
 VERSION ?= dev
 IMAGE ?= openstack-gateway-controller:$(VERSION)
@@ -66,22 +65,15 @@ test-envtest: ## Run controller tests against a real API server and etcd.
 
 .PHONY: test-e2e-compile
 test-e2e-compile: ## Compile the opt-in Phase 2 E2E suite without running it.
-	$(GO) test -tags=e2e -run '^$$' ./test/e2e
+	$(GO) test -tags=e2e -run '^$$' ./test/e2e/...
 
 .PHONY: test-e2e-unit
 test-e2e-unit: ## Run tagged E2E helper tests without contacting a cluster or cloud.
-	GATEWAY_OPENSTACK_E2E=false $(GO) test -tags=e2e -count=1 ./test/e2e
+	GATEWAY_OPENSTACK_E2E=false $(GO) test -tags=e2e -count=1 ./test/e2e/...
 
 .PHONY: test-e2e
-test-e2e: build-audit ## Run the opt-in Phase 2 E2E suite against an explicitly selected cloud.
-	@test "$(GATEWAY_OPENSTACK_E2E)" = "true" || { printf 'Set GATEWAY_OPENSTACK_E2E=true to run the Phase 2 E2E suite.\n'; exit 1; }
-	GATEWAY_OPENSTACK_E2E_AUDIT_BINARY="$(abspath $(AUDIT_BINARY))" \
-	GATEWAY_OPENSTACK_E2E_ARTIFACT_DIR="$(E2E_ARTIFACT_DIR)" \
-	$(GO) test -tags=e2e -count=1 -run '^TestPhase2E2E$$' -timeout=90m ./test/e2e
-
-.PHONY: test-e2e-shared
-test-e2e-shared: build-audit ## Install a run-scoped controller and run live E2E in a shared OpenStack project.
-	@test -n "$(E2E_CONFIG)" || { printf 'Set E2E_CONFIG to the shared-project E2E YAML path.\n'; exit 1; }
+test-e2e: build-audit ## Install a run-scoped controller and run live E2E in the selected OpenStack project.
+	@test -n "$(E2E_CONFIG)" || { printf 'Set E2E_CONFIG to the OpenStack E2E YAML path.\n'; exit 1; }
 	$(GO) run ./test/e2e/runner \
 		--config "$(abspath $(E2E_CONFIG))" \
 		--repository-root "$(CURDIR)" \

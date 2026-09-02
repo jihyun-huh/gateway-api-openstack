@@ -17,7 +17,7 @@ Result owner:
 
 OpenStack project mode (`dedicated` or `shared`):
 
-Project isolation or shared-project risk review confirmed by:
+Kubernetes cluster and OpenStack project isolation review confirmed by:
 
 ## Environment
 
@@ -27,7 +27,8 @@ Record the OpenStack and Octavia releases, negotiated API microversions, literal
 Describe how the VIP, member, and external networks relate and how Amphora reaches the selected Node addresses and NodePorts.
 Remove resource IDs, credentials, private addresses, and customer details.
 
-For a shared project, record who approved the run, how the Kubernetes resources and controller installation were separated from other users, and who reviewed the redacted project-wide inventory difference.
+Record who confirmed that the Kubernetes cluster was reserved for the E2E run.
+For a shared OpenStack project, record who approved the remaining project-wide credential risk and who reviewed the redacted project-wide inventory difference.
 Do not include the expected project, subnet, or network IDs.
 
 ## Installation
@@ -36,7 +37,8 @@ Record the exact manifests, flags, controller name, immutable controller and bac
 State whether the test started from a clean project or an upgrade.
 Confirm that both image references contain `@sha256:`.
 For `dedicated` mode, confirm that the project was disposable, dedicated to this run, and empty of unrelated resources.
-For `shared` mode, confirm that the exact controller name and cluster ID audit scope was empty and that the controller Namespace and RBAC objects were unique to the run.
+For `shared` mode, confirm that the project owner accepted the remaining project-wide access, quota, and API contention risk.
+For both modes, confirm that the exact controller name and cluster ID audit scope was empty and that the controller Namespace and RBAC objects were unique to the run.
 Also confirm that the controller and audit credentials independently authenticated to the expected project and that the Pod template was bound to the final immutable ConfigMap and Secret versions.
 Do not copy the expected project ID or source annotation values into the report.
 

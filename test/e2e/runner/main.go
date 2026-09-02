@@ -36,7 +36,7 @@ func runMain(arguments []string) int {
 	var configPath string
 	var repositoryRoot string
 	var auditBinary string
-	flags.StringVar(&configPath, "config", "", "absolute path to the shared-project E2E config")
+	flags.StringVar(&configPath, "config", "", "absolute path to the OpenStack E2E config")
 	flags.StringVar(&repositoryRoot, "repository-root", "", "repository root; defaults to the current repository")
 	flags.StringVar(&auditBinary, "audit-binary", "", "ownership audit binary; defaults to bin/openstack-gateway-audit")
 	if err := flags.Parse(arguments); err != nil {
@@ -47,22 +47,10 @@ func runMain(arguments []string) int {
 		return 2
 	}
 
-	if repositoryRoot == "" {
-		workingDirectory, err := os.Getwd()
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "error: could not determine the working directory")
-			return 1
-		}
-		repositoryRoot, err = findRepositoryRoot(workingDirectory)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "error: run the E2E runner from this repository or set --repository-root")
-			return 1
-		}
-	} else if !filepath.IsAbs(repositoryRoot) {
-		_, _ = fmt.Fprintln(os.Stderr, "error: --repository-root must be absolute")
-		return 2
+	repositoryRoot, exitCode := prepareRepositoryRoot(repositoryRoot)
+	if exitCode != 0 {
+		return exitCode
 	}
-	repositoryRoot = filepath.Clean(repositoryRoot)
 
 	file, err := loadFileConfig(configPath)
 	if err != nil {
@@ -74,12 +62,9 @@ func runMain(arguments []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
-	if auditBinary != "" {
-		if !filepath.IsAbs(auditBinary) {
-			_, _ = fmt.Fprintln(os.Stderr, "error: --audit-binary must be absolute")
-			return 2
-		}
-		auditBinary = filepath.Clean(auditBinary)
+	auditBinary, exitCode = prepareAuditBinary(auditBinary)
+	if exitCode != 0 {
+		return exitCode
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -94,6 +79,38 @@ func runMain(arguments []string) int {
 		return 1
 	}
 	return 0
+}
+
+func prepareRepositoryRoot(configured string) (string, int) {
+	if configured != "" {
+		if !filepath.IsAbs(configured) {
+			_, _ = fmt.Fprintln(os.Stderr, "error: --repository-root must be absolute")
+			return "", 2
+		}
+		return filepath.Clean(configured), 0
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "error: could not determine the working directory")
+		return "", 1
+	}
+	repositoryRoot, err := findRepositoryRoot(workingDirectory)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "error: run the E2E runner from this repository or set --repository-root")
+		return "", 1
+	}
+	return filepath.Clean(repositoryRoot), 0
+}
+
+func prepareAuditBinary(configured string) (string, int) {
+	if configured == "" {
+		return "", 0
+	}
+	if !filepath.IsAbs(configured) {
+		_, _ = fmt.Fprintln(os.Stderr, "error: --audit-binary must be absolute")
+		return "", 2
+	}
+	return filepath.Clean(configured), 0
 }
 
 func findRepositoryRoot(start string) (string, error) {

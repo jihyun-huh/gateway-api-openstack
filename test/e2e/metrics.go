@@ -107,6 +107,23 @@ func metricCounterDelta(before, after metricSnapshot, name string) (float64, err
 }
 
 func validateConvergedNoOp(before, after metricSnapshot, leaderLease string) error {
+	if err := validateConvergedMetricSnapshots(before, after, leaderLease); err != nil {
+		return err
+	}
+	requestDelta, durationDelta, mutationDelta, err := convergedMetricDeltas(before, after)
+	if err != nil {
+		return err
+	}
+	if requestDelta <= 0 || durationDelta <= 0 {
+		return fmt.Errorf("the controller did not perform a fresh OpenStack observation")
+	}
+	if mutationDelta != 0 {
+		return fmt.Errorf("the controller attempted an OpenStack mutation over converged input")
+	}
+	return nil
+}
+
+func validateConvergedMetricSnapshots(before, after metricSnapshot, leaderLease string) error {
 	if err := validateRequiredMetricFamilies(before); err != nil {
 		return err
 	}
@@ -127,31 +144,29 @@ func validateConvergedNoOp(before, after metricSnapshot, leaderLease string) err
 			return err
 		}
 	}
+	return nil
+}
+
+func convergedMetricDeltas(before, after metricSnapshot) (float64, float64, float64, error) {
 	requestDelta, err := boundedMetricDelta(before, after, requestCounterMetricName, map[string]string{
 		"service": "octavia",
 		"method":  http.MethodGet,
 	})
 	if err != nil {
-		return err
+		return 0, 0, 0, err
 	}
 	durationDelta, err := boundedMetricDelta(before, after, requestDurationCountMetricName, map[string]string{
 		"service": "octavia",
 		"method":  http.MethodGet,
 	})
 	if err != nil {
-		return err
+		return 0, 0, 0, err
 	}
 	mutationDelta, err := metricCounterDelta(before, after, mutationCounterMetricName)
 	if err != nil {
-		return err
+		return 0, 0, 0, err
 	}
-	if requestDelta <= 0 || durationDelta <= 0 {
-		return fmt.Errorf("the controller did not perform a fresh OpenStack observation")
-	}
-	if mutationDelta != 0 {
-		return fmt.Errorf("the controller attempted an OpenStack mutation over converged input")
-	}
-	return nil
+	return requestDelta, durationDelta, mutationDelta, nil
 }
 
 func validateMetricEndpointIdentity(snapshot metricSnapshot, leaderLease string) error {
@@ -220,42 +235,60 @@ func parseMetricSnapshot(reader io.Reader) (metricSnapshot, error) {
 	seen := make(map[string]map[string]struct{})
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		name, sample, found, err := parseAllowlistedMetricSample(scanner.Text())
+		if err != nil {
+			return metricSnapshot{}, err
 		}
-		name, labels, valueText, found, err := metricNameLabelsAndValue(line)
 		if !found {
 			continue
 		}
-		if _, allowed := allowedMetricFamilies[name]; !allowed {
-			continue
+		if err := recordMetricSample(&snapshot, seen, name, sample); err != nil {
+			return metricSnapshot{}, err
 		}
-		if err != nil {
-			return metricSnapshot{}, fmt.Errorf("parse allowlisted metric %s: %w", name, err)
-		}
-		value, err := strconv.ParseFloat(valueText, 64)
-		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
-			return metricSnapshot{}, fmt.Errorf("allowlisted metric %s has a non-finite value", name)
-		}
-		if value < 0 {
-			return metricSnapshot{}, fmt.Errorf("allowlisted metric %s has a negative value", name)
-		}
-		labelKey := canonicalMetricLabels(labels)
-		if seen[name] == nil {
-			seen[name] = make(map[string]struct{})
-		}
-		if _, duplicate := seen[name][labelKey]; duplicate {
-			return metricSnapshot{}, fmt.Errorf("allowlisted metric %s repeats a label set", name)
-		}
-		seen[name][labelKey] = struct{}{}
-		snapshot.values[name] += value
-		snapshot.samples[name] = append(snapshot.samples[name], metricSample{labels: labels, value: value})
 	}
 	if err := scanner.Err(); err != nil {
 		return metricSnapshot{}, fmt.Errorf("read metrics response: %w", err)
 	}
 	return snapshot, nil
+}
+
+func parseAllowlistedMetricSample(line string) (string, metricSample, bool, error) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", metricSample{}, false, nil
+	}
+	name, labels, valueText, found, err := metricNameLabelsAndValue(line)
+	if !found {
+		return "", metricSample{}, false, nil
+	}
+	if _, allowed := allowedMetricFamilies[name]; !allowed {
+		return "", metricSample{}, false, nil
+	}
+	if err != nil {
+		return "", metricSample{}, false, fmt.Errorf("parse allowlisted metric %s: %w", name, err)
+	}
+	value, err := strconv.ParseFloat(valueText, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return "", metricSample{}, false, fmt.Errorf("allowlisted metric %s has a non-finite value", name)
+	}
+	if value < 0 {
+		return "", metricSample{}, false, fmt.Errorf("allowlisted metric %s has a negative value", name)
+	}
+	return name, metricSample{labels: labels, value: value}, true, nil
+}
+
+func recordMetricSample(snapshot *metricSnapshot, seen map[string]map[string]struct{}, name string, sample metricSample) error {
+	labelKey := canonicalMetricLabels(sample.labels)
+	if seen[name] == nil {
+		seen[name] = make(map[string]struct{})
+	}
+	if _, duplicate := seen[name][labelKey]; duplicate {
+		return fmt.Errorf("allowlisted metric %s repeats a label set", name)
+	}
+	seen[name][labelKey] = struct{}{}
+	snapshot.values[name] += sample.value
+	snapshot.samples[name] = append(snapshot.samples[name], sample)
+	return nil
 }
 
 func metricNameLabelsAndValue(line string) (string, map[string]string, string, bool, error) {
@@ -289,40 +322,55 @@ func parseMetricLabels(input string) (map[string]string, error) {
 	labels := make(map[string]string)
 	input = strings.TrimSpace(input)
 	for input != "" {
-		equals := strings.IndexByte(input, '=')
-		if equals <= 0 {
-			return nil, fmt.Errorf("metric label is missing an equals sign")
-		}
-		name := strings.TrimSpace(input[:equals])
-		remainder := strings.TrimSpace(input[equals+1:])
-		if name == "" || !strings.HasPrefix(remainder, `"`) {
-			return nil, fmt.Errorf("metric label has an invalid name or value")
-		}
-		end := quotedMetricLabelEnd(remainder)
-		if end < 0 {
-			return nil, fmt.Errorf("metric label value is not terminated")
-		}
-		value, err := strconv.Unquote(remainder[:end+1])
+		name, value, remainder, err := parseMetricLabel(input)
 		if err != nil {
-			return nil, fmt.Errorf("unquote metric label: %w", err)
+			return nil, err
 		}
 		if _, duplicate := labels[name]; duplicate {
 			return nil, fmt.Errorf("metric label %q is repeated", name)
 		}
 		labels[name] = value
-		remainder = strings.TrimSpace(remainder[end+1:])
-		if remainder == "" {
-			break
-		}
-		if remainder[0] != ',' {
-			return nil, fmt.Errorf("metric labels are not comma separated")
-		}
-		input = strings.TrimSpace(remainder[1:])
-		if input == "" {
-			return nil, fmt.Errorf("metric labels end with a comma")
+		input, err = nextMetricLabelInput(remainder)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return labels, nil
+}
+
+func parseMetricLabel(input string) (string, string, string, error) {
+	equals := strings.IndexByte(input, '=')
+	if equals <= 0 {
+		return "", "", "", fmt.Errorf("metric label is missing an equals sign")
+	}
+	name := strings.TrimSpace(input[:equals])
+	remainder := strings.TrimSpace(input[equals+1:])
+	if name == "" || !strings.HasPrefix(remainder, `"`) {
+		return "", "", "", fmt.Errorf("metric label has an invalid name or value")
+	}
+	end := quotedMetricLabelEnd(remainder)
+	if end < 0 {
+		return "", "", "", fmt.Errorf("metric label value is not terminated")
+	}
+	value, err := strconv.Unquote(remainder[:end+1])
+	if err != nil {
+		return "", "", "", fmt.Errorf("unquote metric label: %w", err)
+	}
+	return name, value, strings.TrimSpace(remainder[end+1:]), nil
+}
+
+func nextMetricLabelInput(remainder string) (string, error) {
+	if remainder == "" {
+		return "", nil
+	}
+	if remainder[0] != ',' {
+		return "", fmt.Errorf("metric labels are not comma separated")
+	}
+	input := strings.TrimSpace(remainder[1:])
+	if input == "" {
+		return "", fmt.Errorf("metric labels end with a comma")
+	}
+	return input, nil
 }
 
 func quotedMetricLabelEnd(value string) int {

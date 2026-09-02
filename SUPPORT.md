@@ -2,7 +2,7 @@
 
 gateway-api-openstack is pre-alpha.
 It does not have a supported production release, a response-time commitment, or a published controller image.
-Use it only in a disposable OpenStack project, except for the guarded shared-project mode in the E2E harness.
+Use it only in a disposable OpenStack project, except for the guarded shared project mode in the E2E runner.
 That mode is for local testing, and its run-scoped checks are not an OpenStack authorization boundary.
 See the [E2E test guide](docs/testing-openstack-e2e.md) before using that mode.
 
