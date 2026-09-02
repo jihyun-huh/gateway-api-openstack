@@ -7,7 +7,83 @@ They do not run the Gateway API conformance suite and they do not establish a su
 No completed controller E2E report has been published yet.
 Running a local command is not evidence until the environment, controller artifact, results, and redacted supporting records are captured in an [OpenStack E2E report](reports/openstack-e2e-template.md).
 
-## Choose the project mode
+## Quick start for a dedicated cluster and shared project
+
+Use this path when the Kubernetes cluster is reserved for the test but other people use the OpenStack project.
+The command creates a controller installation for one run, executes the live OpenStack checks, and removes the installation only after the workload cleanup and ownership audit succeed.
+It does not turn the controller's OpenStack tags into a Keystone permission boundary.
+The `kubernetes.dedicatedForE2E` and `openstack.acceptProjectWideCredentialRisk` fields are operator acknowledgements.
+The runner cannot prove that the cluster is isolated or that the credential is restricted to resources from this run.
+
+Prepare these items before starting:
+
+- A Kubernetes cluster reserved for the run, with Gateway API v1.6.1 Standard Channel CRDs installed.
+- A kubeconfig and context with the permissions listed under [Prerequisites](#prerequisites), including permission to create and delete the run-scoped controller and its cluster-scoped RBAC.
+- A controller image and an `agnhost` backend image that the cluster can pull, both pinned by digest.
+  Set `controller.sourceRevision` to the full lowercase commit that produced the controller image and set `controller.domain` to a DNS domain you control.
+- A controller `clouds.yaml` with only one cloud entry.
+  That entry must be self-contained, use an application credential, and keep TLS verification enabled.
+  Omit `verify` or set it to `true`.
+  The runner rejects `verify: false`, profile inheritance, password or token authentication, and references to additional CA, client certificate, or client key files.
+  The runner copies only the exact `clouds.yaml` bytes into the immutable Secret.
+- An audit `clouds.yaml` with the same cloud entry name and region, unless the controller file is also suitable for the audit.
+  The audit credential may be separate and should have only the inventory permissions it needs, although the preflight cannot prove which Keystone roles or policy rules it has.
+- The exact OpenStack project, VIP subnet, member subnet, and external network approved for the test.
+  Use the literal `none` when the run must not allocate a Floating IP.
+- Enough project quota for the test graph and, when selected, one Floating IP.
+- A network path from Amphora to the Node `InternalIP` and NodePort range, from the runner to both credentials' Keystone `auth_url`, and from the runner to the resulting VIP or Floating IP.
+- A redacted project-wide starting inventory that the project users have reviewed.
+  The runner audits only the exact controller and cluster scope, so it does not replace this independent record or the matching review after the run.
+
+Copy the synthetic example to a private path and replace its placeholder values:
+
+```sh
+mkdir -p _artifacts/e2e-config
+cp test/e2e/shared-project.example.yaml \
+  _artifacts/e2e-config/shared-project.yaml
+```
+
+The parser rejects unknown fields and requires every path inside the YAML file to be absolute.
+Only the top-level `runID`, `openstack.auditCloudsYAML`, and `artifacts` entries are optional.
+Every other field in the example is required.
+Keep `formatVersion: v1alpha1`, `kubernetes.dedicatedForE2E: true`, `openstack.projectMode: shared`, and `openstack.acceptProjectWideCredentialRisk: true` exactly as shown.
+Set `openstack.externalNetworkID` to an exact network ID or the literal `none`.
+Remove `openstack.auditCloudsYAML` to reuse `openstack.controllerCloudsYAML` for the audit.
+Remove `artifacts` to use `_artifacts/e2e/<run-id>` below the repository, or set `artifacts.root` to a non-root absolute directory.
+The runner appends the run ID to that artifact root.
+The final `<artifacts.root>/<run-id>` directory must not already exist because the runner refuses to overwrite evidence.
+You may set an explicit `runID` as a DNS label between 8 and 32 characters, but omit it for normal runs so the runner generates a new value.
+
+Run the live suite with one command:
+
+```sh
+make test-e2e-shared \
+  E2E_CONFIG="$PWD/_artifacts/e2e-config/shared-project.yaml"
+```
+
+This target does not run the unit, race, envtest, or compilation-only test targets.
+Compiling the E2E runner and live test binary is still part of starting the command.
+
+When `runID` is absent, the runner generates a new value and derives the Namespace, GatewayClass, controller name, cluster ID, RBAC names, and artifact directory.
+Before it creates any controller object, the runner authenticates an isolated exact copy of the controller file and the audit configuration separately, and it requires both token projects to match `openstack.expectedProjectID`.
+It then runs the ownership audit and requires a complete, empty result for the exact generated controller name and cluster ID.
+If one of these checks fails, the runner stops without installing the controller.
+It creates the immutable ConfigMap and Secret before the Deployment so the first controller Pod is already bound to their API identities.
+It uses create-only Kubernetes writes and stops instead of adopting an object with the same name.
+The YAML file is the source of truth for the run.
+Inherited `GATEWAY_OPENSTACK_*` and `OS_*` variables do not override its generated harness environment.
+
+If the live suite succeeds, the runner removes the run-scoped controller and RBAC.
+If installation fails before the runner attempts to create the Deployment, it removes a partial installation only when every object still has the API UID and run annotation it recorded.
+Once the runner attempts to create the Deployment, it does not run automatic cleanup after a create, rollout, suite, or final audit failure.
+The run-scoped controller objects and clouds Secret remain available for review and finalization.
+If removal after a successful suite fails, the runner stops at the first failed safety check or API operation.
+Inspect all remaining run-scoped objects instead of assuming that cleanup completed.
+Do not remove that installation, force a finalizer, or delete an OpenStack resource by name until the recovery checks in this guide show that the owned graph is absent.
+
+The rest of this document describes prerequisites, the underlying environment variables, and the manual workflow used for debugging.
+
+## Detailed project modes
 
 The checks create and delete Octavia and Neutron resources.
 A disposable, dedicated OpenStack project remains the preferred setup and is the expected setup for release evidence.
@@ -45,12 +121,15 @@ Prepare all of the following before running the checks:
   Limit the namespaced reads to the run objects where RBAC permits.
   It must also update the run-scoped controller Deployment, delete the current leader Pod, and get the current leader Pod through the `pods/proxy` subresource.
   The audit requires cluster-wide list access to Gateways and HTTPRoutes.
+  This runner also needs permission to create, get, and delete its Namespace, ServiceAccount, ClusterRole, ClusterRoleBinding, ConfigMap, Secret, and Deployment.
 - An Octavia deployment where the literal load balancer provider is `amphora`.
 - A network path from Amphora instances to the selected Node addresses and NodePorts.
 - An OpenStack project with enough quota for one load balancer, its listener and route resources, and an optional Floating IP.
   Prefer a project dedicated to the test.
 - A controller image built from the revision under test and pushed to a registry the cluster can pull from.
-- A Kubernetes Secret containing the test project credentials, following the [getting started guide](getting-started.md).
+- Controller credentials suitable for a Kubernetes Secret, following the [getting started guide](getting-started.md).
+  For quick start, the runner creates the run-scoped Secret from `openstack.controllerCloudsYAML`.
+  The manual workflow uses a Secret prepared by the operator.
 - In shared mode, a network path from the process running the E2E command to the Keystone `auth_url` in the controller Secret.
   The preflight authenticates that credential from the runner, outside the controller Pod.
 
