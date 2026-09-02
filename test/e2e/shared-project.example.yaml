@@ -1,0 +1,21 @@
+formatVersion: v1alpha1
+kubernetes:
+  dedicatedForE2E: true
+  kubeconfig: /absolute/path/to/e2e.kubeconfig
+  context: azimuth-e2e
+openstack:
+  projectMode: shared
+  acceptProjectWideCredentialRisk: true
+  expectedProjectID: "00000000000000000000000000000000"
+  cloud: openstack-e2e
+  region: RegionOne
+  controllerCloudsYAML: /absolute/path/to/controller-clouds.yaml
+  vipSubnetID: 11111111-1111-1111-1111-111111111111
+  memberSubnetID: 22222222-2222-2222-2222-222222222222
+  externalNetworkID: none
+controller:
+  domain: e2e.example.test
+  image: registry.example.test/gateway-api-openstack/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sourceRevision: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+backend:
+  image: registry.k8s.io/e2e-test-images/agnhost:2.57@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
