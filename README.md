@@ -1,17 +1,12 @@
 # Gateway API for OpenStack
 
 > [!IMPORTANT]
-> This project is pre-alpha and is not ready for production. Most Phase 2
-> reliability work is present in the source tree, but the Phase 2 exit evidence
-> and graph writer design are not complete. The project has not yet published
-> results from end-to-end controller testing in an OpenStack environment. The
-> Phase 0 capability probe does not provide that coverage.
+> This project is pre-alpha and is not ready for production.
+> No supported controller environment profile has been published.
 
-gateway-api-openstack is a cloud load-balancer-backed Kubernetes
-[Gateway API](https://gateway-api.sigs.k8s.io/) implementation for OpenStack
-Amphora. It is experimental and currently supports a limited set of HTTP
-features. Its goal is reliable HTTP and terminated HTTPS support without
-requiring an in-cluster proxy data plane.
+gateway-api-openstack implements Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) using OpenStack Amphora load balancers.
+It currently supports a limited set of HTTP features.
+Its goal is reliable HTTP and terminated HTTPS support without requiring an in-cluster proxy data plane.
 
 The controller uses Octavia directly and supports only the Amphora provider. It
 reconciles GatewayClass, Gateway, and HTTPRoute resources into Octavia load
@@ -130,25 +125,18 @@ features must be rejected explicitly in resource status rather than ignored.
 
 ## Project status
 
-Current milestone: **close the Phase 2 exit gates before Phase 3**.
+Current milestone: **Phase 3 prerequisite work and API design**.
 
-The Phase 0 probe tested the required Octavia and Neutron operations in one
-environment. That result applies only to that environment. It does not show
-that the controller works end to end or that every OpenStack cloud is
-compatible.
+Phase 2 is complete as a development milestone, with the HTTP and NodePort reliability foundations implemented and the baseline OpenStack E2E checks passing in one development environment.
+The [development validation record](docs/providers/compatibility.md#development-validation) identifies the tested revision, scope, and remaining limitations.
 
-The constrained Phase 1 path is implemented, although verification in an
-OpenStack environment is still pending. Most Phase 2 reliability foundations
-are present and covered by unit, race, and envtest checks.
+Phase 3 starts with the Gateway graph writer, public identity and class API contracts, and worker NodePort member selection.
+The [work carried into Phase 3](ROADMAP.md#work-carried-into-phase-3) remains open, and changes to ownership or the public API still require accepted ADRs.
+The project remains pre-alpha, with no supported environment profile or Gateway API conformance claim.
 
-Phase 2 is not complete. The remaining gates are a complete Gateway graph
-writer, the first controller and fault report from an Amphora environment, a
-public GATEWAY-HTTP gap report, and the ADRs required before Phase 3.
-
-See [the current development priorities](docs/development-priorities.md) for a concrete refactoring and evidence backlog, and [ROADMAP.md](ROADMAP.md) for the complete phased plan.
+See [the current development priorities](docs/development-priorities.md) for the remaining work and [ROADMAP.md](ROADMAP.md) for the phased plan.
 The [Amphora compatibility evidence](docs/providers/compatibility.md) page records what has and has not been tested.
-The [OpenStack E2E test guide](docs/testing-openstack-e2e.md) provides one configuration file and one command for a dedicated Kubernetes cluster with either a dedicated or shared OpenStack project.
-It also explains how to collect the first controller report without treating the unrun template as evidence.
+The [OpenStack E2E test guide](docs/testing-openstack-e2e.md) explains how to run the checks and record their results.
 
 ## Getting started
 

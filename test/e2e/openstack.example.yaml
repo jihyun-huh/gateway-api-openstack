@@ -1,3 +1,5 @@
+# Replace each <digest> with the image's 64-character SHA-256 digest.
+# Replace <git-commit> with the full 40-character controller source revision.
 formatVersion: v1alpha1
 kubernetes:
   dedicatedForE2E: true
@@ -19,10 +21,15 @@ openstack:
   externalNetworkID: none
 controller:
   domain: e2e.example.test
-  image: registry.example.test/gateway-api-openstack/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  sourceRevision: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  image: registry.example.test/gateway-api-openstack/controller@sha256:<digest>
+  sourceRevision: <git-commit>
 backend:
-  image: registry.k8s.io/e2e-test-images/agnhost:2.57@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  image: registry.k8s.io/e2e-test-images/agnhost@sha256:<digest>
+  # The default externalTrafficPolicy is Cluster.
+  # To restrict members to labeled Nodes with local backend endpoints:
+  # externalTrafficPolicy: Local
+  # nodeSelector:
+  #   e2e.example.test/backend: "true"
 # Omit artifacts to use _artifacts/e2e/<run-id> below the repository.
 # artifacts:
 #   root: /absolute/path/to/e2e-artifacts

@@ -20,9 +20,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestLoadRejectsUnknownYAMLFields(t *testing.T) {
@@ -183,6 +186,53 @@ func TestResolveRejectsMissingCommonSafetyInputs(t *testing.T) {
 			_, err := Resolve(config, ResolveOptions{RepositoryRoot: t.TempDir()})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Resolve() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveBackendProfiles(t *testing.T) {
+	tests := []struct {
+		name       string
+		policy     corev1.ServiceExternalTrafficPolicy
+		selector   map[string]string
+		wantPolicy corev1.ServiceExternalTrafficPolicy
+		wantError  string
+	}{
+		{name: "default Cluster", wantPolicy: corev1.ServiceExternalTrafficPolicyCluster},
+		{name: "explicit Cluster", policy: corev1.ServiceExternalTrafficPolicyCluster, wantPolicy: corev1.ServiceExternalTrafficPolicyCluster},
+		{name: "Local", policy: corev1.ServiceExternalTrafficPolicyLocal, wantPolicy: corev1.ServiceExternalTrafficPolicyLocal},
+		{name: "selected Local", policy: corev1.ServiceExternalTrafficPolicyLocal, selector: map[string]string{"e2e.example.test/backend": "true"}, wantPolicy: corev1.ServiceExternalTrafficPolicyLocal},
+		{name: "empty label value", policy: corev1.ServiceExternalTrafficPolicyLocal, selector: map[string]string{"node-role.kubernetes.io/worker": ""}, wantPolicy: corev1.ServiceExternalTrafficPolicyLocal},
+		{name: "unknown policy", policy: "local", wantError: "externalTrafficPolicy"},
+		{name: "selector with default Cluster", selector: map[string]string{"backend": "true"}, wantError: "requires"},
+		{name: "selector with explicit Cluster", policy: corev1.ServiceExternalTrafficPolicyCluster, selector: map[string]string{"backend": "true"}, wantError: "requires"},
+		{name: "invalid selector key", policy: corev1.ServiceExternalTrafficPolicyLocal, selector: map[string]string{"invalid/private/key": "true"}, wantError: "valid Kubernetes labels"},
+		{name: "invalid selector value", policy: corev1.ServiceExternalTrafficPolicyLocal, selector: map[string]string{"backend": "private value"}, wantError: "valid Kubernetes labels"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validFile()
+			config.Backend.ExternalTrafficPolicy = test.policy
+			config.Backend.NodeSelector = test.selector
+			runtime, err := Resolve(config, ResolveOptions{RepositoryRoot: t.TempDir()})
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) || strings.Contains(err.Error(), "private") {
+					t.Fatalf("Resolve() error = %v, want redacted %q rejection", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runtime.BackendExternalTrafficPolicy != test.wantPolicy || !reflect.DeepEqual(runtime.BackendNodeSelector, test.selector) {
+				t.Fatal("Resolve() did not preserve the backend profile")
+			}
+			for key := range config.Backend.NodeSelector {
+				config.Backend.NodeSelector[key] = "changed"
+				if runtime.BackendNodeSelector[key] == "changed" {
+					t.Fatal("runtime selector aliases the input configuration")
+				}
 			}
 		})
 	}

@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestLoadE2EConfigRequiresExactOptIn(t *testing.T) {
 			config, enabled, err := loadE2EConfig(mapEnvironment(map[string]string{
 				enableEnvironment: value,
 			}))
-			if err != nil || enabled || config != (e2eConfig{}) {
+			if err != nil || enabled || !reflect.DeepEqual(config, e2eConfig{}) {
 				t.Fatalf("loadE2EConfig() = %#v, %t, %v", config, enabled, err)
 			}
 		})

@@ -1,11 +1,11 @@
 # Run the OpenStack controller E2E checks
 
-This guide covers the first end-to-end checks for the current HTTP and NodePort slice.
+This guide covers end-to-end checks for the current HTTP and NodePort implementation.
 The checks use a real Kubernetes API server and an OpenStack Amphora data plane.
 They do not run the Gateway API conformance suite and they do not establish general OpenStack compatibility.
 
-No completed controller E2E report has been published yet.
-A local run becomes evidence only after its environment, immutable artifacts, results, and redacted supporting records are captured in an [OpenStack E2E report](reports/openstack-e2e-template.md).
+Keep detailed run artifacts locally and summarize the results in the PR using the [validation template](reports/openstack-e2e-template.md).
+The [test evidence policy](reports/README.md) explains what to retain and publish.
 
 ## Before you start
 
@@ -19,6 +19,7 @@ Prepare all of the following:
 - Gateway API v1.6.1 Standard Channel CRDs on the cluster.
 - A kubeconfig and explicit context that can create, inspect, update, and delete the run-scoped workloads, controller objects, and cluster-scoped RBAC.
   The test gets the run-scoped Namespaces, ConfigMaps, and Secrets, lists GatewayClasses, and reads Gateway API CRDs, Gateways, HTTPRoutes, EndpointSlices, ReplicaSets, Pods, and the leader Lease.
+  The optional backend Node selector also requires permission to list Nodes.
   It deletes the current leader Pod, updates the controller Deployment, uses the `pods/proxy` subresource for metrics, and lists Gateways and HTTPRoutes for the audit.
 - An OpenStack project with Amphora and enough quota for the Gateway graph and an optional Floating IP.
 - A controller image built from the revision under test and an `agnhost` backend image, both available to the cluster and pinned by digest.
@@ -41,7 +42,7 @@ cp test/e2e/openstack.example.yaml \
 
 Replace every placeholder before running the test.
 The parser rejects unknown fields, and every path value in the file must be absolute.
-Apart from the acknowledgement selected by the project mode, the only optional settings are `runID`, `openstack.auditCloudsYAML`, and `artifacts`.
+Apart from the acknowledgement selected by the project mode, the optional settings are `runID`, `openstack.auditCloudsYAML`, `backend.externalTrafficPolicy`, `backend.nodeSelector`, and `artifacts`.
 
 ### Choose the OpenStack project mode
 
@@ -107,6 +108,31 @@ Omit `runID` for normal runs so the runner generates a new DNS label.
 An explicit `runID` must be between 8 and 32 characters and must not reuse a retained or previously recorded run.
 Omit `artifacts` to write below `_artifacts/e2e/<run-id>`, or set `artifacts.root` to a non-root absolute directory.
 The runner refuses to overwrite an existing run directory.
+
+### Restrict a test backend to selected Nodes
+
+The default backend uses `externalTrafficPolicy: Cluster` and does not restrict Pod placement.
+The current controller does not honor `node.kubernetes.io/exclude-from-external-load-balancers`, so a worker label or backend Pod placement alone does not exclude control plane Nodes from Cluster members.
+To test with selected worker Nodes, add Local endpoint selection and a Node selector to the existing `backend` configuration:
+
+```yaml
+backend:
+  externalTrafficPolicy: Local
+  nodeSelector:
+    e2e.example.test/backend: "true"
+```
+
+Replace the example label with one applied only to the intended worker Nodes, and keep those labels stable throughout the run.
+The runner reads Node labels but does not change them.
+It rejects a nonempty `backend.nodeSelector` unless `backend.externalTrafficPolicy` is `Local`.
+
+The suite requires at least two matching Ready, schedulable Nodes before it creates the backend.
+Required Pod anti-affinity places the two replicas on distinct selected Nodes.
+Before creating the Gateway, the suite checks that EndpointSlices contain ready endpoints on those Nodes.
+Local mode registers only Nodes with eligible local endpoints.
+The operator must still verify the Amphora-to-NodePort path for the selected Nodes.
+
+A Local run provides no evidence for Cluster member selection or the deferred standard exclusion label behavior.
 
 ## Run the suite
 
@@ -177,16 +203,14 @@ An empty audit result never grants deletion or adoption authority.
 See the [ownership audit contract](design/ownership-audit.md) for the full limits.
 
 The runner writes `report.json` and `report.md` in a new artifact directory.
-The artifacts record the source revision, controller image digest, Gateway API bundle, project mode, restart mode, fixed check summaries, and aggregate audit and metrics evidence.
-They do not record project, subnet, network, Kubernetes object, or OpenStack resource IDs.
+The artifacts record the source revision, controller image digest, Gateway API bundle, project mode, restart mode, backend traffic policy, selector use, check results, and aggregate audit and metrics evidence.
+They omit selector keys and values, as well as project, subnet, network, Kubernetes object, and OpenStack resource IDs.
 
 The overall result is `Passed` only when every foundations check, including active ownership evidence, finalization, and the post-test empty audit, passes.
 A failed assertion is `Failed`.
 An optional check outside the run is `Skipped`.
 A scenario that was not attempted or did not reach its assertion remains `Not run`.
 
-The generated artifact is supporting output, not a complete Phase 2 environment report.
-Copy the [report template](reports/openstack-e2e-template.md), describe the environment without private identifiers, and link only retained redacted evidence.
 A retry does not erase an unexplained earlier failure.
 
 ## Failure and cleanup
@@ -203,5 +227,3 @@ Do not reuse the run ID while any retained object or report remains.
 After a successful run, compare a redacted project-wide final inventory with the starting inventory.
 In shared mode, have the project users attribute every concurrent difference.
 The runner does not delete an OpenStack project, application credential, network, or unrelated resource.
-
-Before publishing a report, remove credentials, tokens, project and resource IDs, private addresses, certificates, Pod names and UIDs, leader Lease holder identities, source annotation values, customer data, and unredacted command output.

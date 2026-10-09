@@ -1,6 +1,7 @@
 # Architecture
 
-Status: proposed; current behavior is identified in each section
+Status: proposed.
+Each section identifies the current behavior.
 
 Audience: contributors, reviewers, OpenStack operators, Gateway API implementers
 
@@ -289,14 +290,12 @@ still comes from the desired graph and OpenStack observation, so restart and
 leader change require no lock recovery. Leader election is required for
 multiple controller replicas.
 
-The current implementation has that keyed coordinator in
-`internal/controller/graph`, but Gateway and HTTPRoute reconciliation still
-call separate provider operations. `internal/cloud/openstack/graph` organizes
-those existing provider operations behind the OpenStack facade. Neither
-package is the complete graph writer. Serialization prevents overlapping
-mutation; it does not make the two paths one writer. [ADR
-0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route
-fragment contract. It is not accepted or implemented yet.
+The current implementation has that keyed coordinator in `internal/controller/graph`, but Gateway and HTTPRoute reconciliation still call separate provider operations.
+`internal/cloud/openstack/graph` organizes those existing provider operations behind the OpenStack facade.
+Neither package is the complete graph writer.
+Serialization prevents overlapping mutations, but the two paths remain separate.
+[ADR 0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route fragment contract.
+It is not accepted or implemented yet.
 
 ### Asynchronous OpenStack operations
 
@@ -378,9 +377,9 @@ does not infer this from the installation.
 
 ### NodePort mode
 
-NodePort is the default and the only current mode. Octavia members point to
-selected worker Node addresses and a Service NodePort provided by the user. The
-controller never creates a helper Service.
+NodePort is the default and the only current mode.
+Octavia members point to eligible Node addresses and a Service NodePort provided by the user.
+The controller never creates a helper Service.
 
 The controller validates the Service port, protocol, Node address, member
 subnet, Node readiness, and EndpointSlice state.
@@ -388,9 +387,8 @@ subnet, Node readiness, and EndpointSlice state.
 `externalTrafficPolicy: Local` uses only Nodes with eligible local endpoints
 and therefore updates membership from EndpointSlice events.
 
-Compatibility evidence must name the tested Local endpoint behavior, IP family,
-kube-proxy mode or replacement, and Amphora topology. The full environment
-profile belongs in the [OpenStack E2E report](../reports/openstack-e2e-template.md).
+Compatibility evidence must name the tested Local endpoint behavior, IP family, kube-proxy mode or replacement, and Amphora topology.
+Record the environment in a formal compatibility report under the [test evidence policy](../reports/README.md).
 Unrecorded combinations are not part of a support claim.
 
 NodePort works where Pod CIDRs are not routable from Amphora, but it requires
@@ -454,8 +452,8 @@ PathPrefix requires special handling. Octavia `STARTS_WITH /foo` also matches
 `/foobar`, while Gateway API PathPrefix does not. The representable mapping is
 an exact `/foo` policy plus a `/foo/` prefix policy.
 
-Octavia can directly represent exact and wildcard hostnames, Exact and
-PathPrefix paths, and exact header matches; these are candidates for support.
+Octavia can directly represent exact and wildcard hostnames, Exact and PathPrefix paths, and exact header matches.
+These are candidates for support.
 Method and query matching, header transformation, URL rewrite, mirroring, and
 other filters remain unsupported unless exact behavior is proven. Weighted
 Service backends require separate proof because Octavia member weights do not
