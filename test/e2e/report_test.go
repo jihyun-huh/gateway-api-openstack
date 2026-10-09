@@ -22,35 +22,68 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestOverallStatusRequiresBaseline(t *testing.T) {
-	report := newE2EReport(time.Unix(1, 0), projectModeDedicated, "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
+	report := newE2EReport(time.Unix(1, 0), reportTestConfig(projectModeDedicated))
 	if got := overallStatus(report.Checks); got != statusNotRun {
 		t.Fatalf("overallStatus() = %q, want %q", got, statusNotRun)
 	}
-	for name := range requiredBaselineChecks {
-		if err := report.setCheck(name, statusPassed, checkSummaryPassed); err != nil {
+	for _, check := range reportChecks {
+		if !check.required {
+			continue
+		}
+		if err := report.setCheck(check.name, statusPassed, checkSummaryPassed); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if got := overallStatus(report.Checks); got != statusPassed {
 		t.Fatalf("overallStatus() = %q, want %q", got, statusPassed)
 	}
-	if err := report.setCheck("quota failure", statusFailed, checkSummaryFailed); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name   string
+		status checkStatus
+		want   checkStatus
+	}{
+		{name: "orderly deletion and finalizer completion", status: statusNotRun, want: statusNotRun},
+		{name: "orderly deletion and finalizer completion", status: statusSkipped, want: statusNotRun},
+		{name: "orderly deletion and finalizer completion", status: statusFailed, want: statusFailed},
+		{name: "quota failure", status: statusFailed, want: statusFailed},
+	} {
+		t.Run(test.name+"/"+string(test.status), func(t *testing.T) {
+			checks := append([]checkResult(nil), report.Checks...)
+			for i := range checks {
+				if checks[i].Name == test.name {
+					checks[i].Status = test.status
+				}
+			}
+			if got := overallStatus(checks); got != test.want {
+				t.Fatalf("overallStatus() = %q, want %q", got, test.want)
+			}
+		})
 	}
-	if got := overallStatus(report.Checks); got != statusFailed {
-		t.Fatalf("overallStatus() = %q, want %q", got, statusFailed)
+	// A duplicate success cannot replace the required cleanup audit.
+	checks := append([]checkResult(nil), report.Checks...)
+	for i := range checks {
+		if checks[i].Name == "post-test ownership audit returns to baseline" {
+			checks[i] = checks[0]
+		}
+	}
+	if got := overallStatus(checks); got != statusNotRun {
+		t.Fatalf("overallStatus() without cleanup audit = %q, want %q", got, statusNotRun)
 	}
 }
 
 func TestSetCheckRejectsUnsafeSummaryShape(t *testing.T) {
-	report := newE2EReport(time.Now(), projectModeDedicated, "cold", strings.Repeat("b", 40), "sha256:"+strings.Repeat("a", 64))
+	report := newE2EReport(time.Now(), reportTestConfig(projectModeDedicated))
 	if err := report.setCheck("Gateway status", statusPassed, "line one\nline two"); err == nil {
 		t.Fatal("setCheck() accepted a multiline summary")
 	}
-	if err := report.setCheck("missing check", statusPassed, "Safe summary"); err == nil {
+	if err := report.setCheck("missing check", statusPassed, checkSummaryPassed); err == nil || !strings.Contains(err.Error(), "unknown report check") {
 		t.Fatal("setCheck() accepted an unknown check")
 	}
 	if err := report.setCheck("Gateway status", statusFailed, "secret-token"); err == nil {
@@ -61,9 +94,13 @@ func TestSetCheckRejectsUnsafeSummaryShape(t *testing.T) {
 func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "run-1234")
-	revision := strings.Repeat("b", 40)
-	digest := "sha256:" + strings.Repeat("a", 64)
-	report := newE2EReport(time.Unix(1, 0), projectModeShared, "cold", revision, digest)
+	config := reportTestConfig(projectModeShared)
+	config.BackendExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+	config.BackendNodeSelector = map[string]string{"private.example.test/node-pool": "private-node-pool"}
+	report := newE2EReport(time.Unix(1, 0), config)
+	if report.Backend.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || !report.Backend.NodeSelectorConfigured {
+		t.Fatalf("report backend profile = %#v", report.Backend)
+	}
 	report.CompletedAt = time.Unix(2, 0)
 	if err := report.setCheck("preflight safety validation", statusPassed, checkSummaryPassed); err != nil {
 		t.Fatal(err)
@@ -72,7 +109,7 @@ func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 		t.Fatalf("writeE2EArtifacts() error = %v", err)
 	}
 	for _, name := range []string{"report.json", "report.md"} {
-		assertE2EArtifactContents(t, filepath.Join(directory, name), revision, digest)
+		assertE2EArtifactContents(t, filepath.Join(directory, name), config.ControllerRevision, config.ControllerImageDigest)
 	}
 	if err := writeE2EArtifacts(directory, report); err == nil {
 		t.Fatal("writeE2EArtifacts() overwrote an existing artifact directory")
@@ -86,12 +123,25 @@ func assertE2EArtifactContents(t *testing.T, path, revision, digest string) {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	for _, forbidden := range []string{"secret-token", "project-id", "expected-vip-subnet", "expected-member-subnet", "192.0.2.10", "pod-uid"} {
+	for _, forbidden := range []string{"secret-token", "project-id", "expected-vip-subnet", "expected-member-subnet", "192.0.2.10", "pod-uid", "private.example.test/node-pool", "private-node-pool"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("%s contains forbidden value %q", filepath.Base(path), forbidden)
 		}
 	}
 	if !strings.Contains(text, revision) || !strings.Contains(text, digest) || !strings.Contains(text, string(projectModeShared)) {
 		t.Fatalf("%s does not contain immutable controller evidence", filepath.Base(path))
+	}
+	if !strings.Contains(text, string(corev1.ServiceExternalTrafficPolicyLocal)) {
+		t.Fatalf("%s does not record the Local backend profile", filepath.Base(path))
+	}
+}
+
+func reportTestConfig(mode projectMode) e2eConfig {
+	return e2eConfig{
+		Project:                      runconfig.Project{Mode: mode},
+		RestartMode:                  "cold",
+		ControllerRevision:           strings.Repeat("b", 40),
+		ControllerImageDigest:        "sha256:" + strings.Repeat("a", 64),
+		BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster,
 	}
 }

@@ -22,12 +22,14 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
@@ -114,9 +116,11 @@ type Controller struct {
 	SourceRevision string `json:"sourceRevision"`
 }
 
-// Backend identifies the immutable backend artifact used by the run.
+// Backend identifies the immutable artifact and placement used by the run.
 type Backend struct {
-	Image string `json:"image"`
+	Image                 string                              `json:"image"`
+	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
+	NodeSelector          map[string]string                   `json:"nodeSelector,omitempty"`
 }
 
 // Artifacts selects the parent directory for run evidence.
@@ -209,31 +213,33 @@ func newRuntime(
 	externalNetworkID string,
 ) Runtime {
 	return Runtime{
-		FormatVersion:          FormatVersion,
-		RunID:                  identity.runID,
-		Namespace:              workloadNamespacePrefix + identity.runID,
-		Kubeconfig:             kubernetes.kubeconfig,
-		KubeContext:            kubernetes.context,
-		ControllerName:         identity.controllerName,
-		ControllerNamespace:    controllerNamespacePrefix + identity.runID,
-		ControllerDeployment:   controllerDeploymentName,
-		ControllerContainer:    controllerContainerName,
-		ControllerReplicas:     controllerReplicas,
-		ControllerImage:        artifacts.controllerImage,
-		ControllerImageDigest:  artifacts.controllerImageDigest,
-		ControllerRevision:     artifacts.controllerRevision,
-		ControllerCloudsYAML:   artifacts.controllerCloudsYAML,
-		LeaderLease:            controllerLeaseName,
-		BackendImage:           artifacts.backendImage,
-		ArtifactDirectory:      filepath.Join(filepath.Clean(artifacts.artifactsRoot), identity.runID),
-		RestartMode:            defaultRestartMode,
-		Timeout:                defaultTimeout,
-		PollInterval:           defaultPollInterval,
-		HTTPTimeout:            defaultHTTPTimeout,
-		NoOpWindow:             defaultNoOpWindow,
-		GatewayClassName:       identity.identity,
-		ClusterRoleName:        identity.identity + "-controller",
-		ClusterRoleBindingName: identity.identity + "-controller",
+		FormatVersion:                FormatVersion,
+		RunID:                        identity.runID,
+		Namespace:                    workloadNamespacePrefix + identity.runID,
+		Kubeconfig:                   kubernetes.kubeconfig,
+		KubeContext:                  kubernetes.context,
+		ControllerName:               identity.controllerName,
+		ControllerNamespace:          controllerNamespacePrefix + identity.runID,
+		ControllerDeployment:         controllerDeploymentName,
+		ControllerContainer:          controllerContainerName,
+		ControllerReplicas:           controllerReplicas,
+		ControllerImage:              artifacts.controllerImage,
+		ControllerImageDigest:        artifacts.controllerImageDigest,
+		ControllerRevision:           artifacts.controllerRevision,
+		ControllerCloudsYAML:         artifacts.controllerCloudsYAML,
+		LeaderLease:                  controllerLeaseName,
+		BackendImage:                 artifacts.backendImage,
+		BackendExternalTrafficPolicy: backendTrafficPolicy(config.Backend.ExternalTrafficPolicy),
+		BackendNodeSelector:          maps.Clone(config.Backend.NodeSelector),
+		ArtifactDirectory:            filepath.Join(filepath.Clean(artifacts.artifactsRoot), identity.runID),
+		RestartMode:                  defaultRestartMode,
+		Timeout:                      defaultTimeout,
+		PollInterval:                 defaultPollInterval,
+		HTTPTimeout:                  defaultHTTPTimeout,
+		NoOpWindow:                   defaultNoOpWindow,
+		GatewayClassName:             identity.identity,
+		ClusterRoleName:              identity.identity + "-controller",
+		ClusterRoleBindingName:       identity.identity + "-controller",
 		Project: Project{
 			Mode:                      config.OpenStack.ProjectMode,
 			ExpectedProjectID:         strings.TrimSpace(config.OpenStack.ExpectedProjectID),
@@ -276,6 +282,9 @@ func validateFilePolicy(config File) error {
 	if err := validateProjectAcknowledgement(config.OpenStack); err != nil {
 		return err
 	}
+	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		name  string
 		value string
@@ -289,6 +298,28 @@ func validateFilePolicy(config File) error {
 	} {
 		if strings.TrimSpace(item.value) == "" {
 			return fmt.Errorf("%s must not be empty", item.name)
+		}
+	}
+	return nil
+}
+
+func backendTrafficPolicy(policy corev1.ServiceExternalTrafficPolicy) corev1.ServiceExternalTrafficPolicy {
+	if policy == "" {
+		return corev1.ServiceExternalTrafficPolicyCluster
+	}
+	return policy
+}
+
+func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string) error {
+	if policy != corev1.ServiceExternalTrafficPolicyCluster && policy != corev1.ServiceExternalTrafficPolicyLocal {
+		return fmt.Errorf("backend.externalTrafficPolicy must be Cluster or Local")
+	}
+	if len(selector) != 0 && policy != corev1.ServiceExternalTrafficPolicyLocal {
+		return fmt.Errorf("backend.nodeSelector requires backend.externalTrafficPolicy Local to restrict member selection")
+	}
+	for key, value := range selector {
+		if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 {
+			return fmt.Errorf("backend.nodeSelector must contain valid Kubernetes labels")
 		}
 	}
 	return nil

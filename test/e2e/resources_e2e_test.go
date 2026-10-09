@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -39,6 +40,16 @@ import (
 )
 
 func (s *phase2Suite) createBackend(ctx context.Context) error {
+	replicas := int32(2)
+	if len(s.config.BackendNodeSelector) != 0 {
+		nodes, err := s.selectedBackendNodes(ctx)
+		if err != nil {
+			return err
+		}
+		if len(nodes) < int(replicas) {
+			return fmt.Errorf("backend node selector requires at least two ready schedulable Nodes")
+		}
+	}
 	namespace := s.backendNamespace()
 	s.createdNamespace = true
 	if err := s.client.Create(ctx, namespace); err != nil {
@@ -46,7 +57,6 @@ func (s *phase2Suite) createBackend(ctx context.Context) error {
 	}
 	s.namespaceUID = namespace.UID
 
-	replicas := int32(2)
 	deployment := s.backendDeployment(replicas)
 	if err := s.client.Create(ctx, deployment); err != nil {
 		return fmt.Errorf("create backend Deployment: %w", err)
@@ -71,7 +81,7 @@ func (s *phase2Suite) backendNamespace() *corev1.Namespace {
 }
 
 func (s *phase2Suite) backendDeployment(replicas int32) *appsv1.Deployment {
-	return &appsv1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: s.config.Namespace,
 			Name:      backendName,
@@ -95,6 +105,16 @@ func (s *phase2Suite) backendDeployment(replicas int32) *appsv1.Deployment {
 			},
 		},
 	}
+	if len(s.config.BackendNodeSelector) != 0 {
+		deployment.Spec.Template.Spec.NodeSelector = maps.Clone(s.config.BackendNodeSelector)
+		deployment.Spec.Template.Spec.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+				LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": backendName}},
+				TopologyKey:   corev1.LabelHostname,
+			}},
+		}}
+	}
+	return deployment
 }
 
 func (s *phase2Suite) backendService() *corev1.Service {
@@ -102,7 +122,7 @@ func (s *phase2Suite) backendService() *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{Namespace: s.config.Namespace, Name: backendName},
 		Spec: corev1.ServiceSpec{
 			Type:                  corev1.ServiceTypeNodePort,
-			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster,
+			ExternalTrafficPolicy: s.config.BackendExternalTrafficPolicy,
 			Selector:              map[string]string{"app.kubernetes.io/name": backendName},
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
@@ -132,6 +152,9 @@ func (s *phase2Suite) backendReady(ctx context.Context, deployment *appsv1.Deplo
 	if err := s.client.Get(ctx, client.ObjectKeyFromObject(service), &currentService); err != nil {
 		return false, err
 	}
+	if currentService.Spec.ExternalTrafficPolicy != s.config.BackendExternalTrafficPolicy {
+		return false, fmt.Errorf("backend Service external traffic policy changed")
+	}
 	if len(currentService.Spec.Ports) != 1 || currentService.Spec.Ports[0].NodePort == 0 {
 		return false, nil
 	}
@@ -151,19 +174,64 @@ func (s *phase2Suite) backendEndpointsReady(ctx context.Context, replicas int32)
 	); err != nil {
 		return false, err
 	}
-	return countReadyEndpoints(slices.Items) == int(replicas), nil
-}
-
-func countReadyEndpoints(slices []discoveryv1.EndpointSlice) int {
 	readyEndpoints := 0
-	for _, slice := range slices {
+	endpointNodes := make(map[string]struct{})
+	for _, slice := range slices.Items {
 		for _, endpoint := range slice.Endpoints {
-			if endpoint.Conditions.Ready != nil && *endpoint.Conditions.Ready {
-				readyEndpoints++
+			if !readyBackendEndpoint(endpoint) {
+				continue
+			}
+			readyEndpoints++
+			if endpoint.NodeName != nil {
+				endpointNodes[*endpoint.NodeName] = struct{}{}
 			}
 		}
 	}
-	return readyEndpoints
+	if readyEndpoints != int(replicas) {
+		return false, nil
+	}
+	if len(s.config.BackendNodeSelector) == 0 {
+		return true, nil
+	}
+	if len(endpointNodes) != int(replicas) {
+		return false, nil
+	}
+	nodes, err := s.selectedBackendNodes(ctx)
+	if err != nil {
+		return false, err
+	}
+	for name := range endpointNodes {
+		if _, selected := nodes[name]; !selected {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *phase2Suite) selectedBackendNodes(ctx context.Context) (map[string]struct{}, error) {
+	var nodes corev1.NodeList
+	if err := s.client.List(ctx, &nodes, client.MatchingLabels(s.config.BackendNodeSelector)); err != nil {
+		return nil, fmt.Errorf("list selected backend Nodes: %w", err)
+	}
+	selected := make(map[string]struct{})
+	for _, node := range nodes.Items {
+		if !node.DeletionTimestamp.IsZero() || node.Spec.Unschedulable {
+			continue
+		}
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				selected[node.Name] = struct{}{}
+			}
+		}
+	}
+	return selected, nil
+}
+
+func readyBackendEndpoint(endpoint discoveryv1.Endpoint) bool {
+	// Match the controller's member eligibility so an unknown-ready endpoint
+	// cannot introduce an unselected Node after the fixture passes validation.
+	return (endpoint.Conditions.Ready == nil || *endpoint.Conditions.Ready) &&
+		(endpoint.Conditions.Terminating == nil || !*endpoint.Conditions.Terminating)
 }
 
 func (s *phase2Suite) createGatewayClass(ctx context.Context) error {

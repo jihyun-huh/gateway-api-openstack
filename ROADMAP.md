@@ -4,12 +4,10 @@ This roadmap sets the order of work for gateway-api-openstack. It is a planning
 document, not a release promise. A feature moves forward only after its
 ownership, failure behavior, and test evidence are clear.
 
-The current development stage is **closing the Phase 2 gates**. The constrained
-Phase 1 implementation and most Phase 2 reliability foundations are present in
-the source tree, but the project remains pre-alpha. The complete Gateway graph
-writer, OpenStack controller evidence, conformance gap report, and required
-ADRs are still open. Completing code work does not by itself establish
-production readiness, support, or conformance.
+The current development stage is **Phase 3 prerequisite work and API design**.
+The Phase 2 development milestone is complete for the current HTTP and NodePort reliability foundations, following a successful baseline OpenStack E2E run.
+The complete Gateway graph writer, extended fault and upgrade tests, scale measurements, conformance gap report, and required ADRs remain open and are carried into Phase 3.
+The project remains pre-alpha, with no production readiness, support, or conformance claim.
 
 Each controller release pins the Gateway API version it supports. The current
 baseline is the Gateway API v1.6.1 Standard Channel.
@@ -67,35 +65,27 @@ proposed text. The table below summarizes each phase and its exit criteria.
 | Phase | Status | Outcome | Exit gate |
 | --- | --- | --- | --- |
 | 0 — Feasibility | Historical | Prove the required Amphora primitives and ownership boundary | Capability probe retained, with later phases still requiring their ADRs |
-| 1 — HTTP slice | Implemented (evidence pending) | One Gateway, listener, route, and NodePort backend | Published traffic, restart, no-op, deletion, and leak evidence |
-| 2 — Reconciliation | Foundations implemented; gates open | One efficient writer for each Gateway graph that recovers after a restart | Graph writer contract, fault, race, upgrade, API efficiency, and documented conformance gaps |
-| 3 — Class API | Planned | Typed, validated topology configuration | Reviewed API contract, migration rules, and generated CRD |
+| 1 — HTTP slice | Implemented and development-tested | One Gateway, listener, route, and NodePort backend | Formal compatibility claims still require published environment evidence |
+| 2 — Reconciliation | Development milestone complete | Reliability foundations for the current HTTP and NodePort path | Baseline OpenStack E2E passed. Remaining work is carried into Phase 3 |
+| 3 — Class API | Active prerequisite work and API design | Typed, validated topology configuration | Complete carried implementation work, reviewed API contract, migration rules, and generated CRD |
 | 4 — Connectivity | Planned | Deterministic address, network, and security handling | Results from tests in OpenStack without adopting foreign network resources |
 | 5 — HTTP/HTTPS | Planned | Multiple listeners, route compilation, and terminated HTTPS | Pinned conformance results and safe Barbican lifecycle |
 | 6 — Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible conformance report |
 | 7 — Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, support policy, and release evidence |
 
-Phase 2 implementation continues while the Phase 1 environment report remains
-an open graduation gate. The phase number describes the active engineering
-work, not evidence that every earlier exit condition has passed.
+Phase numbers describe engineering milestones, and version milestones are planning targets rather than published releases.
+Closing Phase 2 changes the sequencing of its original gates.
+The [work carried into Phase 3](#work-carried-into-phase-3) remains incomplete and must pass its implementation or release gate.
 
 ## Near-term sequence
 
-The next work has three tracks. They should move together, but none of them is
-a reason to start the Phase 3 CRD early.
+Phase 3 starts with the design and reliability work needed before adding a public configuration API.
 
-1. **Prove the current slice.** Publish the first controller traffic, restart,
-   no-op, fault, deletion, and leak report from a disposable Amphora
-   environment. Exercise blocked finalization and the ownership audit there.
-   Use the [OpenStack E2E test guide](docs/testing-openstack-e2e.md) and retain
-   the completed report with the compatibility evidence.
-2. **Finish the design boundary.** Accept the graph writer and public identity
-   ADRs, replace the two cloud mutation paths with one complete desired Gateway
-   graph, and publish the pinned GATEWAY-HTTP gap analysis.
-3. **Make outside testing practical.** Keep contributor, governance, support,
-   and ADR guidance current. After the public identity and registry are
-   decided, publish a versioned pre-alpha image pinned by digest. It is an
-   evaluation artifact, not a supported release.
+1. **Finish the graph writer and API contracts.** Review the graph writer and public identity ADRs, replace the two cloud mutation paths with one complete desired Gateway graph, and define class configuration, migration, and compatibility rules before implementing the CRD.
+2. **Implement class configuration and worker member selection.** Define worker eligibility and exclusion label behavior before changing member selection, then cover both NodePort traffic policies and membership changes.
+3. **Complete validation for outside testing.** Revalidate the selected revision in OpenStack, exercise the deferred fault and upgrade scenarios, measure event fan-out, and publish the pinned GATEWAY-HTTP gap analysis.
+   Use the [OpenStack E2E test guide](docs/testing-openstack-e2e.md), with a dedicated environment for fault scenarios.
+   After the public identity and registry are decided, publish an immutable pre-alpha image for evaluation.
 
 The detailed implementation and refactoring backlog is in
 [docs/development-priorities.md](docs/development-priorities.md).
@@ -109,12 +99,11 @@ roadmap.
 
 ## Evidence and compatibility rules
 
-Compatibility applies to a particular release and environment. The canonical
-environment fields and report formats are in
-[docs/providers/compatibility.md](docs/providers/compatibility.md) and
-[docs/reports](docs/reports/README.md). A report must identify the controller
-artifact, cloud and cluster versions, Amphora topology, network path, and exact
-tests well enough for another operator to understand its scope.
+Compatibility applies to a particular release and environment.
+The canonical environment fields and report formats are in [docs/providers/compatibility.md](docs/providers/compatibility.md) and [docs/reports](docs/reports/README.md).
+A report must identify the controller artifact, cloud and cluster versions, Amphora topology, network path, and exact tests well enough for another operator to understand its scope.
+These requirements apply to formal compatibility and release claims.
+For development runs, retain exact build and environment details locally and use a concise PR summary under the [test evidence policy](docs/reports/README.md).
 
 Use evidence terms consistently. `Probed` means an API primitive worked in one
 environment. `Verified` means a controller revision passed named tests in one
@@ -182,24 +171,23 @@ Phase 1 implements the first end-to-end controller path:
 - a Gophercloud adapter boundary, unit tests, Kustomize deployment, example,
   and deterministic binary release packaging
 
-The Phase 1 code is complete, but it still needs validation in an OpenStack
-environment. The first published report must demonstrate traffic, status,
-restart without duplication, converged no-op behavior, ordered deletion, and
-absence of leaked resources in a documented Amphora topology. Phase 2 cannot
-graduate without that report.
+The Phase 1 code is complete, and the [development E2E run](docs/providers/compatibility.md#development-validation) covered traffic, status, restart, converged no-op behavior, ordered deletion, and cleanup for the tested Local NodePort path.
+A formal compatibility claim still requires a reviewed report for the exact release and documented Amphora topology.
 
 ## Phase 2 - Safe and efficient reconciliation
 
-**Status:** Reliability foundations implemented — graph writer and exit
-evidence remain open
+**Status:** Development milestone complete for the current HTTP and NodePort reliability foundations.
 
 **Milestone:** `v0.2.0`
 
-Phase 2 hardens the behavior implemented in Phase 1 before adding a CRD or more
-Gateway API features.
+Phase 2 established the reliability baseline for the behavior implemented in Phase 1.
+All 12 required foundations checks passed in a manual OpenStack run, including restart, no-op observation, finalization, and ownership audit.
+The [validation record](docs/providers/compatibility.md#development-validation) identifies the tested revision and the checks that were not run.
+The remaining implementation and evidence gates are carried into Phase 3 below.
 
 ### One writer for one Gateway graph
 
+The complete graph writer remains a prerequisite for the class API.
 Gateway and HTTPRoute events can affect the same Octavia load balancer. The
 controller will use the Gateway UID to identify and serialize changes to that
 graph. Route reconcilers may remain responsible for attachment validation and
@@ -262,8 +250,8 @@ After a Gateway or HTTPRoute converges, the controller observes its OpenStack
 resources again on a configurable slow interval. Stable, bounded jitter derived
 from the Kubernetes resource UID spreads these observations over time. The same
 scheduling rule applies to Octavia resources that are still progressing.
-Kubernetes watches remain responsible for changes to desired state; periodic
-observation finds changes made directly in OpenStack.
+Kubernetes watches remain responsible for changes to desired state.
+Periodic observation finds changes made directly in OpenStack.
 
 The OpenStack adapter recreates missing listeners, pools, members, and health
 monitors after it verifies the remaining graph. It also enables a managed load
@@ -272,9 +260,9 @@ controller. If route resources are present, the bound HTTPRoute first verifies
 its exact identity, the complete Route graph, and the Gateway's provider,
 subnet, listener, and Floating IP configuration. It then enables the listener
 and load balancer in separate reconciliations. Gateway reconciliation performs
-the repair directly only when there are no route resources. Adapter tests cover
-these repairs. Fault injection in an OpenStack environment remains part of the
-Phase 2 exit evidence.
+the repair directly only when there are no route resources.
+Adapter tests cover these repairs.
+Fault injection in an OpenStack environment remains part of the validation carried into Phase 3.
 
 Failures during finalization keep the finalizer and stored binding. The
 controller records a stable condition and emits an Event when the condition
@@ -296,7 +284,7 @@ The controller envtest uses a real Kubernetes API server and etcd to cover
 status subresources, stale resource versions, durable binding checkpoints,
 progressing finalization with a newly constructed reconciler, and cache field
 indexes. It does not exercise a manager or process restart, run an OpenStack
-data plane, or replace the fault tests required for this phase.
+data plane, or replace the outstanding OpenStack fault tests.
 
 ### Kubernetes and OpenStack API efficiency
 
@@ -353,49 +341,45 @@ they observe a live mismatch before the class status changes. HTTPRoute cleanup
 rebuilds the current attachment, backend, endpoint, Node, and route selection
 decision before it removes a graph that still has a managed parent.
 
-Before Phase 3 implementation begins, accept ADRs for:
+Before implementing the Phase 3 class API, accept ADRs for:
 
-1. the graph writer keyed by Gateway UID and ownership of route fragments
-2. the canonical controller name, module and repository ownership, artifact
-   registry, migration policy, and an API domain controlled by the project
-3. GatewayClass and any parameter snapshot for individual Gateways, including
-   merge, propagation, and migration semantics
-4. shared ownership, if any, of the `security_groups` field on worker Neutron
-   ports
-5. the compatibility and deprecation policy for project CRDs
+- the graph writer keyed by Gateway UID and ownership of route fragments
+- the canonical controller name, module and repository ownership, artifact registry, migration policy, and an API domain controlled by the project
+- GatewayClass and any parameter snapshot for individual Gateways, including merge, propagation, and migration semantics
+- the compatibility and deprecation policy for project CRDs
 
-Keep the contribution guide, code of conduct, support policy, governance,
-OWNERS roles, and ADR process reviewed and aligned with actual project
-practice before Phase 3 begins.
+Any shared ownership of the `security_groups` field on worker Neutron ports requires a separate accepted ADR before that mode is implemented.
+Keep the contribution guide, code of conduct, support policy, governance, OWNERS roles, and ADR process reviewed and aligned with actual project practice.
 
-### Phase 2 exit criteria
+### Work carried into Phase 3
 
-- One writer compiles and applies the complete desired Gateway graph; Gateway
-  and HTTPRoute reconciliation do not issue independent graph mutations.
-- No two reconciles issue overlapping mutations to the same Gateway graph.
-- A converged reconcile performs zero OpenStack mutations and no semantic
-  status patch.
-- Octavia pending states do not occupy a worker for an unbounded period.
-- Restart, leader change, partial creation, external deletion, quota, rate
-  limiting, timeout, repeat deletion, and `v0.1.x` upgrade tests pass.
-- The controller keeps state local to each reconciliation request, and
-  `go test -race ./...` passes.
-- Indexed watch mapping replaces cluster-wide `List` calls used to find
-  dependencies.
-- The Phase 1 traffic, restart, deletion, and leak report from an OpenStack
-  environment is published with exact environment versions and topology.
-- The blocked finalization and ownership audit workflow is exercised in that
-  environment without removing a finalizer or deleting an unverified resource.
-- A public report identifies the remaining conformance gaps, and the required
-  ADRs are public and reviewed.
-- Contributor, governance, support, code of conduct, and ADR guidance is
-  published, and its contact paths work.
+The following original Phase 2 gates remain open.
+Moving them into Phase 3 does not mark them as implemented or tested.
+
+| Work | Required before |
+| --- | --- |
+| Accept the graph writer ADR and implement one complete desired graph, observation, and mutation path | Implementing the class API or expanding the route graph |
+| Accept the public identity, class configuration, migration, and CRD compatibility ADRs | Implementing or publishing the affected public API |
+| Measure Node and EndpointSlice event fan-out, API reads, and effective reconciles | Completing Phase 3 reliability work or increasing concurrency |
+| Exercise partial creation, external deletion, quota, rate limiting, timeout, Octavia failure, repeat deletion, and `v0.1.x` upgrades | Closing the release reliability gate for the selected revision |
+| Validate blocked finalization and the operator recovery workflow with the ownership audit | Publishing the recovery procedure as verified in OpenStack |
+| Repeat baseline E2E for the selected release revision and publish a reviewed environment report | Making a compatibility claim for that release and environment |
+| Publish the pinned GATEWAY-HTTP gap analysis | Completing Phase 3 API design for backend and route behavior |
+| Review contributor, governance, support, code of conduct, ADR guidance, and working contact paths | Publishing artifacts for outside testing |
+
+Preserve serialization by Gateway UID, reconcile state local to each request, bounded Octavia progress checks, and indexed dependency reads throughout this work.
+A converged reconcile must issue zero OpenStack mutations and no semantic status patch.
+Run unit, race, and envtest checks for the affected implementation, and repeat traffic, restart, finalization, audit, and leak checks for the selected live revision.
+Formal release evidence follows the [publication policy](docs/reports/README.md).
 
 ## Phase 3 - Class configuration and topology API
 
-**Status:** Planned
+**Status:** Active prerequisite work and API design.
 
 **Milestone:** `v0.3.0`
+
+Start with the [work carried from Phase 2](#work-carried-into-phase-3).
+API and ownership changes still require their design decisions before implementation.
 
 Phase 3 replaces a growing set of infrastructure flags for the controller
 deployment with a small, typed GatewayClass configuration API. The provisional
@@ -454,6 +438,22 @@ deployment defaults. Deprecating those flags requires a separately announced
 compatibility window. Cleanup must remain possible even if the parameter
 object has been deleted or made invalid.
 
+### Worker NodePort member selection
+
+Phase 3 will make worker Nodes the default for NodePort members.
+Record the exact worker and control-plane eligibility rules, including any opt-in exceptions, in a design issue or ADR before implementation.
+The current implementation checks Node readiness, deletion, and schedulability, but does not honor `node.kubernetes.io/exclude-from-external-load-balancers`.
+
+Honor the upstream semantics of `node.kubernetes.io/exclude-from-external-load-balancers` when defining member eligibility.
+The exclusion label alone does not identify worker Nodes, and a `node-role.kubernetes.io/worker` label is not present on every worker Node.
+Preserve the existing readiness and address checks, and apply the exclusion to both `externalTrafficPolicy: Cluster` and `externalTrafficPolicy: Local`.
+Local mode must additionally require an eligible local endpoint.
+
+Node watch predicates must react when relevant role or exclusion labels change and enqueue affected managed NodePort backends.
+Test worker and control-plane eligibility, both traffic policies, and exclusion labels that are absent or have empty, true, false, or invalid values.
+After a label change, membership must converge without recreating unchanged members or issuing no-op cloud mutations.
+Any additional configurable Node selector requires a reviewed design before it becomes part of the class API.
+
 ### Deterministic resource resolution
 
 Network and subnet references may support an explicit UUID, an exact name, or
@@ -481,6 +481,7 @@ an excuse to accept a non-Amphora provider silently.
 
 ### Phase 3 exit criteria
 
+- Complete the carried graph writer, API design, and scale work, and retain explicit release gates for validation that is still outstanding.
 - A reviewed `v1alpha1` API, generated CRD, examples, and API reference are
   published under a domain controlled by the project.
 - Invalid, missing, ambiguous, or unauthorized configuration is rejected
@@ -492,6 +493,7 @@ an excuse to accept a non-Amphora provider silently.
   live parameter object.
 - API defaulting, immutability, status, storage, upgrade, and deprecation rules
   have tests and documentation.
+- NodePort member selection uses worker Nodes by default under the reviewed eligibility rules, honors upstream load balancer exclusion-label semantics for both traffic policies, and converges after label changes without recreating unchanged members.
 - A versioned pre-alpha image can be installed by digest, and scheduled E2E in
   the first recorded Amphora environment performs a post-test leak audit.
 
@@ -657,12 +659,10 @@ configured for individual routes remain unsupported unless a later Octavia API
 offers an exact mapping.
 Unsupported or incompatible fields receive standard Gateway API conditions.
 
-Weighted backends require the Phase 2 feasibility decision. Weights assigned to
-Services, different endpoint counts, weight zero, and Gateway API behavior when
-a backend is invalid must match the specification. Similar Octavia member
-weights are not enough to prove this behavior. If exact semantics cannot be
-demonstrated, the feature remains rejected and the project publishes partial
-rather than full conformance.
+Weighted backends require the conformance feasibility decision carried into Phase 3.
+Weights assigned to Services, different endpoint counts, weight zero, and Gateway API behavior when a backend is invalid must match the specification.
+Similar Octavia member weights are not enough to prove this behavior.
+If exact semantics cannot be demonstrated, the feature remains rejected and the project publishes partial rather than full conformance.
 
 ### Cross-namespace references
 
@@ -861,11 +861,8 @@ The stable release requires all of the following:
 - Install, upgrade, rollback, credential rotation, and uninstall are
   reproducible using released artifacts.
 
-Full GATEWAY-HTTP Core conformance is desirable because it gives users the
-clearest portable contract. If the Phase 2 feasibility work proves that
-Amphora cannot express a Core semantic safely, the stable contract will say so,
-publish the conformance results, including failures, and remain useful within
-its documented HTTP/HTTPS subset without overstating portability.
+Full GATEWAY-HTTP Core conformance is desirable because it gives users the clearest portable contract.
+If the conformance feasibility work proves that Amphora cannot express a Core semantic safely, the stable contract will say so, publish the conformance results, including failures, and remain useful within its documented HTTP/HTTPS subset without overstating portability.
 
 ## Deferred or out of scope
 

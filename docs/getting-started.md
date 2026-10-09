@@ -1,9 +1,9 @@
 # Getting started with the current controller
 
 The controller is pre-alpha.
-The constrained Phase 1 path and most Phase 2 reliability foundations are implemented, but the Phase 2 graph writer and exit evidence are not complete.
-The Phase 0 probe tested the required Octavia and Neutron operations in one environment.
-The project has not yet published results from end-to-end controller testing in an OpenStack environment.
+Phase 2 is complete as a development milestone following the baseline OpenStack E2E run for the constrained HTTP and NodePort path.
+See the [development validation record](providers/compatibility.md#development-validation) for its tested revision, scope, and limitations, and the [roadmap](../ROADMAP.md#work-carried-into-phase-3) for the work carried into Phase 3.
+No supported controller environment profile has been published.
 No release image is available.
 
 Use these base manifests only in a disposable test project.

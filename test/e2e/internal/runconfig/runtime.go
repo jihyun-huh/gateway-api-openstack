@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -33,33 +34,35 @@ const maximumRuntimeBytes = 1 << 20
 
 // Runtime is the validated, non-secret configuration passed to the live test process.
 type Runtime struct {
-	FormatVersion          string        `json:"formatVersion"`
-	RunID                  string        `json:"runID"`
-	Namespace              string        `json:"namespace"`
-	Kubeconfig             string        `json:"kubeconfig"`
-	KubeContext            string        `json:"kubeContext"`
-	ControllerName         string        `json:"controllerName"`
-	ControllerNamespace    string        `json:"controllerNamespace"`
-	ControllerDeployment   string        `json:"controllerDeployment"`
-	ControllerContainer    string        `json:"controllerContainer"`
-	ControllerReplicas     int32         `json:"controllerReplicas"`
-	ControllerImage        string        `json:"controllerImage"`
-	ControllerImageDigest  string        `json:"controllerImageDigest"`
-	ControllerRevision     string        `json:"controllerRevision"`
-	ControllerCloudsYAML   string        `json:"controllerCloudsYAML"`
-	LeaderLease            string        `json:"leaderLease"`
-	BackendImage           string        `json:"backendImage"`
-	ArtifactDirectory      string        `json:"artifactDirectory"`
-	RestartMode            string        `json:"restartMode"`
-	Timeout                time.Duration `json:"timeout"`
-	PollInterval           time.Duration `json:"pollInterval"`
-	HTTPTimeout            time.Duration `json:"httpTimeout"`
-	NoOpWindow             time.Duration `json:"noOpWindow"`
-	GatewayClassName       string        `json:"gatewayClassName"`
-	ClusterRoleName        string        `json:"clusterRoleName"`
-	ClusterRoleBindingName string        `json:"clusterRoleBindingName"`
-	Project                Project       `json:"project"`
-	Audit                  Audit         `json:"audit"`
+	FormatVersion                string                              `json:"formatVersion"`
+	RunID                        string                              `json:"runID"`
+	Namespace                    string                              `json:"namespace"`
+	Kubeconfig                   string                              `json:"kubeconfig"`
+	KubeContext                  string                              `json:"kubeContext"`
+	ControllerName               string                              `json:"controllerName"`
+	ControllerNamespace          string                              `json:"controllerNamespace"`
+	ControllerDeployment         string                              `json:"controllerDeployment"`
+	ControllerContainer          string                              `json:"controllerContainer"`
+	ControllerReplicas           int32                               `json:"controllerReplicas"`
+	ControllerImage              string                              `json:"controllerImage"`
+	ControllerImageDigest        string                              `json:"controllerImageDigest"`
+	ControllerRevision           string                              `json:"controllerRevision"`
+	ControllerCloudsYAML         string                              `json:"controllerCloudsYAML"`
+	LeaderLease                  string                              `json:"leaderLease"`
+	BackendImage                 string                              `json:"backendImage"`
+	BackendExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"backendExternalTrafficPolicy"`
+	BackendNodeSelector          map[string]string                   `json:"backendNodeSelector,omitempty"`
+	ArtifactDirectory            string                              `json:"artifactDirectory"`
+	RestartMode                  string                              `json:"restartMode"`
+	Timeout                      time.Duration                       `json:"timeout"`
+	PollInterval                 time.Duration                       `json:"pollInterval"`
+	HTTPTimeout                  time.Duration                       `json:"httpTimeout"`
+	NoOpWindow                   time.Duration                       `json:"noOpWindow"`
+	GatewayClassName             string                              `json:"gatewayClassName"`
+	ClusterRoleName              string                              `json:"clusterRoleName"`
+	ClusterRoleBindingName       string                              `json:"clusterRoleBindingName"`
+	Project                      Project                             `json:"project"`
+	Audit                        Audit                               `json:"audit"`
 }
 
 // Project is the resolved OpenStack project and network contract.
@@ -166,7 +169,7 @@ func (c Runtime) validateArtifacts() error {
 	if !agnhostImagePattern.MatchString(c.BackendImage) {
 		return fmt.Errorf("runtime backend artifact is invalid")
 	}
-	return nil
+	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector)
 }
 
 func (c Runtime) validateOpenStack() error {

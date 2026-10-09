@@ -24,16 +24,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 const reportFormatVersion = "v1alpha1"
 
 const (
-	checkSummaryPassed                = "The check completed with the expected result"
-	checkSummaryFailed                = "The check did not reach the expected result; details are omitted"
-	checkSummaryEvidenceNotConfigured = "Required evidence input was not configured"
-	checkSummaryAuditNotConfigured    = "Ownership audit configuration was not supplied"
-	checkSummaryFaultNotConfigured    = "No safe fault injector was configured for this run"
+	checkSummaryPassed             = "The check completed with the expected result"
+	checkSummaryFailed             = "The check did not reach the expected result. Details are omitted."
+	checkSummaryFaultNotConfigured = "No safe fault injector was configured for this run"
 )
 
 type checkStatus string
@@ -45,39 +45,29 @@ const (
 	statusNotRun  checkStatus = "Not run"
 )
 
-var orderedCheckNames = []string{
-	"preflight safety validation",
-	"isolated NodePort backend",
-	"GatewayClass status",
-	"Gateway status",
-	"HTTPRoute status",
-	"active ownership inventory audit",
-	"external HTTP traffic",
-	"leader pod deletion and recovery",
-	"cold controller restart and recovery",
-	"converged metrics snapshot",
-	"orderly deletion and finalizer completion",
-	"post-test ownership audit returns to baseline",
-	"external deletion of an owned child resource",
-	"blocked finalization",
-	"quota failure",
-	"request timeout and rate limiting",
-	"Octavia resource failure",
-}
-
-var requiredBaselineChecks = map[string]struct{}{
-	"preflight safety validation":                   {},
-	"isolated NodePort backend":                     {},
-	"GatewayClass status":                           {},
-	"Gateway status":                                {},
-	"HTTPRoute status":                              {},
-	"active ownership inventory audit":              {},
-	"external HTTP traffic":                         {},
-	"leader pod deletion and recovery":              {},
-	"cold controller restart and recovery":          {},
-	"converged metrics snapshot":                    {},
-	"orderly deletion and finalizer completion":     {},
-	"post-test ownership audit returns to baseline": {},
+// reportChecks defines display order and the checks required for a passing run.
+// The remaining checks need a separately configured fault injector.
+var reportChecks = []struct {
+	name     string
+	required bool
+}{
+	{name: "preflight safety validation", required: true},
+	{name: "isolated NodePort backend", required: true},
+	{name: "GatewayClass status", required: true},
+	{name: "Gateway status", required: true},
+	{name: "HTTPRoute status", required: true},
+	{name: "active ownership inventory audit", required: true},
+	{name: "external HTTP traffic", required: true},
+	{name: "leader pod deletion and recovery", required: true},
+	{name: "cold controller restart and recovery", required: true},
+	{name: "converged metrics snapshot", required: true},
+	{name: "orderly deletion and finalizer completion", required: true},
+	{name: "post-test ownership audit returns to baseline", required: true},
+	{name: "external deletion of an owned child resource"},
+	{name: "blocked finalization"},
+	{name: "quota failure"},
+	{name: "request timeout and rate limiting"},
+	{name: "Octavia resource failure"},
 }
 
 type checkResult struct {
@@ -111,6 +101,11 @@ type metricsEvidence struct {
 	After  map[string]float64 `json:"after,omitempty"`
 }
 
+type backendEvidence struct {
+	ExternalTrafficPolicy  corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy"`
+	NodeSelectorConfigured bool                                `json:"nodeSelectorConfigured"`
+}
+
 type e2eReport struct {
 	FormatVersion         string           `json:"formatVersion"`
 	Suite                 string           `json:"suite"`
@@ -122,29 +117,38 @@ type e2eReport struct {
 	ControllerImageDigest string           `json:"controllerImageDigest"`
 	ProjectMode           projectMode      `json:"projectMode"`
 	RestartMode           string           `json:"restartMode"`
+	Backend               backendEvidence  `json:"backend"`
 	Checks                []checkResult    `json:"checks"`
 	Audit                 *auditEvidence   `json:"audit,omitempty"`
 	Metrics               *metricsEvidence `json:"metrics,omitempty"`
 }
 
-func newE2EReport(startedAt time.Time, projectMode projectMode, restartMode, controllerRevision, controllerImageDigest string) *e2eReport {
+func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 	report := &e2eReport{
 		FormatVersion:         reportFormatVersion,
 		Suite:                 "Phase 2 E2E foundations",
 		Status:                statusNotRun,
 		StartedAt:             startedAt.UTC(),
 		GatewayAPIBundle:      "v1.6.1 Standard Channel",
-		ControllerRevision:    controllerRevision,
-		ControllerImageDigest: controllerImageDigest,
-		ProjectMode:           projectMode,
-		RestartMode:           restartMode,
-		Checks:                make([]checkResult, 0, len(orderedCheckNames)),
+		ControllerRevision:    config.ControllerRevision,
+		ControllerImageDigest: config.ControllerImageDigest,
+		ProjectMode:           config.Project.Mode,
+		RestartMode:           config.RestartMode,
+		Backend: backendEvidence{
+			ExternalTrafficPolicy:  config.BackendExternalTrafficPolicy,
+			NodeSelectorConfigured: len(config.BackendNodeSelector) != 0,
+		},
+		Checks: make([]checkResult, 0, len(reportChecks)),
 	}
-	for _, name := range orderedCheckNames {
+	for _, check := range reportChecks {
+		summary := "The check was not executed"
+		if !check.required {
+			summary = checkSummaryFaultNotConfigured
+		}
 		report.Checks = append(report.Checks, checkResult{
-			Name:    name,
+			Name:    check.name,
 			Status:  statusNotRun,
-			Summary: "The check was not executed",
+			Summary: summary,
 		})
 	}
 	return report
@@ -153,9 +157,6 @@ func newE2EReport(startedAt time.Time, projectMode projectMode, restartMode, con
 func (r *e2eReport) setCheck(name string, status checkStatus, summary string) error {
 	if !validCheckStatus(status) {
 		return fmt.Errorf("unsupported check status %q", status)
-	}
-	if strings.TrimSpace(summary) == "" || strings.ContainsAny(summary, "\r\n") {
-		return fmt.Errorf("check summary must be one non-empty line")
 	}
 	if !validCheckSummary(summary) {
 		return fmt.Errorf("check summary must use a fixed redacted value")
@@ -172,8 +173,7 @@ func (r *e2eReport) setCheck(name string, status checkStatus, summary string) er
 
 func validCheckSummary(summary string) bool {
 	switch summary {
-	case checkSummaryPassed, checkSummaryFailed, checkSummaryEvidenceNotConfigured,
-		checkSummaryAuditNotConfigured, checkSummaryFaultNotConfigured:
+	case checkSummaryPassed, checkSummaryFailed, checkSummaryFaultNotConfigured:
 		return true
 	default:
 		return false
@@ -239,6 +239,12 @@ func renderMarkdownReportHeader(output *bytes.Buffer, report *e2eReport) {
 	_, _ = fmt.Fprintf(output, "Controller image digest: `%s`\n\n", report.ControllerImageDigest)
 	_, _ = fmt.Fprintf(output, "OpenStack project mode: %s\n\n", report.ProjectMode)
 	_, _ = fmt.Fprintf(output, "Restart mode: %s\n\n", report.RestartMode)
+	_, _ = fmt.Fprintf(output, "Backend external traffic policy: %s\n\n", report.Backend.ExternalTrafficPolicy)
+	_, _ = fmt.Fprintf(output, "Backend Node selector configured: %t\n\n", report.Backend.NodeSelectorConfigured)
+	if report.Backend.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
+		_, _ = fmt.Fprintln(output, "This run uses Local endpoint selection and does not provide evidence for Cluster member selection.")
+		_, _ = fmt.Fprintln(output)
+	}
 }
 
 func renderMarkdownCheckTable(output *bytes.Buffer, checks []checkResult) {
@@ -308,19 +314,21 @@ func renderMarkdownLimits(output *bytes.Buffer, mode projectMode) {
 }
 
 func overallStatus(checks []checkResult) checkStatus {
-	passedRequired := make(map[string]struct{}, len(requiredBaselineChecks))
+	passed := make(map[string]bool, len(checks))
 	for _, check := range checks {
 		if check.Status == statusFailed {
 			return statusFailed
 		}
-		if _, required := requiredBaselineChecks[check.Name]; required && check.Status == statusPassed {
-			passedRequired[check.Name] = struct{}{}
+		if check.Status == statusPassed {
+			passed[check.Name] = true
 		}
 	}
-	if len(passedRequired) == len(requiredBaselineChecks) {
-		return statusPassed
+	for _, check := range reportChecks {
+		if check.required && !passed[check.name] {
+			return statusNotRun
+		}
 	}
-	return statusNotRun
+	return statusPassed
 }
 
 func writeExclusiveFile(path string, contents []byte) error {

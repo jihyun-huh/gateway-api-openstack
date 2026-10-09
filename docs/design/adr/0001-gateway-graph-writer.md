@@ -98,7 +98,7 @@ member, health monitor, L7 policy, and L7 rule inputs. It does not contain
 cached Octavia IDs. Load balancer, Floating IP, and listener fields belong to
 the Gateway part of the graph.
 
-For the Phase 2 profile, the graph contains at most one desired route fragment.
+For the current HTTP profile, the graph contains at most one desired route fragment.
 The controller keeps the current selection rule and exact route identity tags.
 Changing selection, priority across several routes, or shared route resources
 requires another ADR.
@@ -238,10 +238,9 @@ An in-memory registry is simple while one process is running, but a leader
 change loses detach intent and fragment completeness. It is not a source of
 truth for a level-based controller.
 
-### Add a fragment CRD in Phase 2
+### Add a separate fragment CRD
 
-A CRD could make fragments durable, but it adds a public API, upgrade contract,
-and garbage-collection lifecycle before the GatewayClass API work in Phase 3.
+A CRD could make fragments durable, but it adds a public API, upgrade contract, and garbage-collection lifecycle alongside the planned GatewayClass API.
 The existing HTTPRoute binding is sufficient for the current one-route profile.
 
 ### Let only the Gateway reconciler write and make HTTPRoute status implicit
@@ -315,8 +314,9 @@ OpenStack adapter tests must cover:
 - listener then load balancer administrative repair
 - whole-graph reverse deletion and lifecycle-specific `404` handling
 
-OpenStack end-to-end evidence remains a separate Phase 2 gate. Accepting this
-ADR and passing local tests do not prove compatibility or conformance.
+The graph writer and its OpenStack validation are part of the [work carried into Phase 3](../../../ROADMAP.md#work-carried-into-phase-3).
+The earlier baseline E2E run did not test this proposed writer.
+Accepting this ADR and passing local tests do not prove compatibility or conformance.
 
 ## Follow-up work
 
@@ -325,5 +325,4 @@ ADR and passing local tests do not prove compatibility or conformance.
 - Replace the Provider methods with the complete graph operation.
 - Move the adapter to one desired graph, observation, plan, and mutation path.
 - Retarget current coordinator, transition, deletion, and lost-response tests.
-- Publish the Phase 2 OpenStack and conformance gap reports after the writer is
-  implemented and reviewed.
+- Validate the implemented writer in OpenStack and publish the conformance gap report under the [test evidence policy](../../reports/README.md).

@@ -1,12 +1,19 @@
 # Current development priorities
 
-Status: working plan
+Status: Phase 3 prerequisite work and API design
 
 This page turns the unfinished work in the roadmap into changes that can be
 opened as focused issues. It does not replace the phase status and exit gates in
 [ROADMAP.md](../ROADMAP.md), and it does not replace an accepted ADR.
 
-## Work before Phase 3
+Phase 2 is complete as a development milestone following the baseline OpenStack E2E run for the constrained HTTP and NodePort path.
+The [development validation record](providers/compatibility.md#development-validation) describes the tested revision and remaining limitations.
+The [work carried into Phase 3](../ROADMAP.md#work-carried-into-phase-3) remains open.
+
+## Phase 3 work
+
+Begin with the Gateway graph writer, the public identity and class API contracts, and worker NodePort member selection.
+Accept the relevant ADRs before changing ownership or implementing the class API.
 
 ### 1. Finish the Gateway graph writer contract
 
@@ -41,11 +48,10 @@ lifecycle in a resource package:
 - `internal/controller/gateway`
 - `internal/controller/httproute`
 
-The root `internal/controller` package contains the shared Kubernetes-facing
-contracts. `internal/controller/graph` contains only the Gateway UID keyed
-coordinator, and `internal/controller/ownershipaudit` contains the read-only
-Kubernetes binding collector. Resource packages depend on those lower-level
-contracts; the root package does not import a reconciler.
+The root `internal/controller` package contains the shared Kubernetes-facing contracts.
+`internal/controller/graph` contains only the Gateway UID keyed coordinator, and `internal/controller/ownershipaudit` contains the read-only Kubernetes binding collector.
+Resource packages depend on those lower-level contracts.
+The root package does not import a reconciler.
 
 The OpenStack adapter is also divided by responsibility. Authentication and
 shared clients, error classification, immutable identity, Octavia, Neutron,
@@ -85,16 +91,15 @@ patches its objects, while RBAC also grants `update` on several main and status
 resources. Remove a verb only after API server tests show that metadata,
 status, and finalizer patches still work through every lifecycle path.
 
-### 4. Publish the first OpenStack controller report
+### 4. Complete the remaining OpenStack evidence
 
-The first report is a gate, not optional release polish. Run the controller in
-a disposable Amphora project and complete the
-[OpenStack E2E report template](reports/openstack-e2e-template.md), including
-real traffic, restart, no-op, fault, finalization, audit, and leak results.
-Store the durable report in the repository. A GitHub issue can collect the
-work, but an issue alone is not compatibility evidence for a release. Evidence
-terms and support boundaries are defined in the roadmap and
-[compatibility matrix](providers/compatibility.md).
+Use the [OpenStack E2E test guide](testing-openstack-e2e.md) to extend the baseline evidence with the remaining fault, upgrade, and operator recovery scenarios, and rerun the baseline after controller changes.
+Use the Local backend profile to restrict test placement to selected Nodes.
+Label-based test placement remains necessary until the controller implements the [worker NodePort member selection](../ROADMAP.md#worker-nodeport-member-selection) contract.
+Use a dedicated environment for fault scenarios under the guide's restrictions.
+
+Follow the [publication policy](reports/README.md) for local artifacts and PR summaries.
+Formal compatibility and release claims still require reviewed evidence under the roadmap and [compatibility matrix](providers/compatibility.md).
 
 ### 5. Publish a conformance gap report
 
@@ -119,10 +124,19 @@ from the configured controller name, so changing it can make a new process miss
 old bindings. Do this before publishing the Phase 3 CRD or a long-lived image
 reference.
 
-After that decision, publish a versioned pre-alpha image early enough for
-outside testing. Pin examples and reports to an immutable digest. The image is
-an evaluation artifact; signatures, provenance, SBOMs, multi-architecture
-promotion, and a supported Helm chart remain later release work.
+Define class configuration, per-Gateway overrides, snapshots, propagation, and migration before implementing the API.
+The identity, parameter, and compatibility ADRs must be accepted before adding the CRD.
+
+After that decision, publish a versioned pre-alpha image early enough for outside testing.
+Pin examples and reports to an immutable digest.
+The image is for evaluation.
+Signatures, provenance, SBOMs, multi-architecture promotion, and a supported Helm chart remain later release work.
+
+### 7. Define worker NodePort member selection
+
+Make worker Nodes the default for NodePort members under the [roadmap's eligibility rules](../ROADMAP.md#worker-nodeport-member-selection).
+Record the control-plane exclusion rules and any opt-in exceptions in a design issue or ADR before implementation.
+Cover both traffic policies, the upstream load balancer exclusion label, and changes to Node eligibility without recreating unchanged members.
 
 ## Community work alongside the code
 
@@ -142,18 +156,15 @@ entry backed by a current conformance report. The criteria for maintainer
 growth and any future community home are in [GOVERNANCE.md](../GOVERNANCE.md),
 not in this work list.
 
-Repository operations need a small hardening pass as well. Pin every GitHub
-Action to a reviewed commit, run race and envtest checks for the exact release
-candidate, and add documentation link, license header, and Kustomize render
-checks when their maintenance cost is understood. Verify branch protection and
-GitHub private vulnerability reporting in repository settings; a file in the
-source tree cannot prove either setting is active. Remove merged remote feature
-branches only as a separate repository maintenance task.
+Repository operations need a small hardening pass as well.
+Pin every GitHub Action to a reviewed commit, run race and envtest checks for the exact release candidate, and add documentation link, license header, and Kustomize render checks when their maintenance cost is understood.
+Verify branch protection and GitHub private vulnerability reporting in repository settings.
+A file in the source tree cannot prove either setting is active.
+Remove merged remote feature branches only as a separate repository maintenance task.
 
 ## Work that should not be pulled forward
 
-Do not use the Phase 2 hardening as a reason to add broad features before the
-gates above close. In particular:
+Starting Phase 3 does not remove the design requirements for new features:
 
 - Do not add the GatewayClass configuration CRD before the identity, snapshot,
   migration, and compatibility ADRs are accepted.

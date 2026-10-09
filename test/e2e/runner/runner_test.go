@@ -46,6 +46,9 @@ func TestOpenStackExampleMatchesStrictRunnerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFileConfig(example) error = %v", err)
 	}
+	config.Controller.Image = strings.ReplaceAll(config.Controller.Image, "<digest>", strings.Repeat("a", 64))
+	config.Controller.SourceRevision = strings.ReplaceAll(config.Controller.SourceRevision, "<git-commit>", strings.Repeat("b", 40))
+	config.Backend.Image = strings.ReplaceAll(config.Backend.Image, "<digest>", strings.Repeat("c", 64))
 	if _, err := resolveFileConfig(config, resolveOptions{
 		repositoryRoot: repositoryRoot,
 		random:         bytes.NewReader([]byte{1, 2, 3, 4}),

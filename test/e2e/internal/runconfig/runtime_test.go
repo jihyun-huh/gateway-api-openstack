@@ -23,10 +23,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestWriteAndLoadRuntimeUsesStrictPrivateFile(t *testing.T) {
 	config := validRuntime(t)
+	config.BackendExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+	config.BackendNodeSelector = map[string]string{"e2e.example.test/backend": "true"}
 	path, err := WriteRuntime(t.TempDir(), config)
 	if err != nil {
 		t.Fatalf("WriteRuntime() error = %v", err)
@@ -47,6 +51,38 @@ func TestWriteAndLoadRuntimeUsesStrictPrivateFile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded, config) {
 		t.Fatalf("loaded runtime = %#v, want %#v", loaded, config)
+	}
+}
+
+func TestRuntimeRejectsInvalidBackendProfiles(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Runtime)
+	}{
+		{name: "missing traffic policy", mutate: func(config *Runtime) { config.BackendExternalTrafficPolicy = "" }},
+		{name: "unknown traffic policy", mutate: func(config *Runtime) { config.BackendExternalTrafficPolicy = "unknown" }},
+		{name: "selector with Cluster", mutate: func(config *Runtime) { config.BackendNodeSelector = map[string]string{"backend": "true"} }},
+		{name: "malformed selector", mutate: func(config *Runtime) {
+			config.BackendExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+			config.BackendNodeSelector = map[string]string{"invalid/private/key": "true"}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validRuntime(t)
+			test.mutate(&config)
+			contents, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "runtime.json")
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadRuntime(path); err == nil || !strings.Contains(err.Error(), "backend.") || strings.Contains(err.Error(), "private") {
+				t.Fatalf("LoadRuntime() error = %v, want redacted backend profile rejection", err)
+			}
+		})
 	}
 }
 

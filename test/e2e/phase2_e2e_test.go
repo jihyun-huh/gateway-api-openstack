@@ -107,8 +107,7 @@ func TestPhase2E2E(t *testing.T) {
 	}
 
 	startedAt := time.Now().UTC()
-	report := newE2EReport(startedAt, config.Project.Mode, config.RestartMode, config.ControllerRevision, config.ControllerImageDigest)
-	markUnimplementedFaultChecks(report)
+	report := newE2EReport(startedAt, config)
 
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
 	defer cancel()
@@ -118,7 +117,7 @@ func TestPhase2E2E(t *testing.T) {
 	runErr = verifyPhase2PostCleanupAudit(suite, report, runErr)
 	runErr = writePhase2Artifacts(t, config.ArtifactDirectory, report, runErr)
 	if runErr != nil {
-		t.Fatal("Phase 2 E2E did not complete; details were intentionally redacted from test output")
+		t.Fatal("Phase 2 E2E did not complete. Details were omitted from test output.")
 	}
 }
 
@@ -128,7 +127,7 @@ func requirePhase2Suite(t *testing.T, config e2eConfig, report *e2eReport) *phas
 	if err == nil {
 		return suite
 	}
-	mustSetCheck(report, "preflight safety validation", statusFailed, failedSummary("preflight safety validation"))
+	mustSetCheck(report, "preflight safety validation", statusFailed, checkSummaryFailed)
 	writeReportAfterSetupFailure(t, config.ArtifactDirectory, report)
 	t.Fatal("Phase 2 E2E preflight could not create a Kubernetes client")
 	return nil
@@ -142,7 +141,7 @@ func runPhase2WithCleanup(ctx context.Context, suite *phase2Suite, report *e2eRe
 	if cleanupErr == nil {
 		return runErr
 	}
-	mustSetCheck(report, "orderly deletion and finalizer completion", statusFailed, failedSummary("orderly deletion and finalizer completion"))
+	mustSetCheck(report, "orderly deletion and finalizer completion", statusFailed, checkSummaryFailed)
 	return firstPhase2Error(runErr, errors.New("ordered E2E cleanup did not complete"))
 }
 
@@ -156,7 +155,7 @@ func verifyPhase2PostCleanupAudit(suite *phase2Suite, report *e2eReport, runErr 
 	if err == nil {
 		return runErr
 	}
-	mustSetCheck(report, "post-test ownership audit returns to baseline", statusFailed, failedSummary("post-test ownership audit returns to baseline"))
+	mustSetCheck(report, "post-test ownership audit returns to baseline", statusFailed, checkSummaryFailed)
 	return firstPhase2Error(runErr, errors.New("post-test ownership audit did not match the baseline"))
 }
 
@@ -241,21 +240,12 @@ func (s *phase2Suite) run(ctx context.Context) error {
 		{name: "converged metrics snapshot", run: s.verifyConvergedNoOp},
 		{name: "orderly deletion and finalizer completion", run: s.orderlyCleanup},
 	}
-	incomplete := false
 	for _, step := range steps {
 		if err := step.run(ctx); err != nil {
-			if errors.Is(err, errEvidenceNotConfigured) {
-				mustSetCheck(s.report, step.name, statusNotRun, checkSummaryEvidenceNotConfigured)
-				incomplete = true
-				continue
-			}
-			mustSetCheck(s.report, step.name, statusFailed, failedSummary(step.name))
+			mustSetCheck(s.report, step.name, statusFailed, checkSummaryFailed)
 			return errors.New("an E2E step failed")
 		}
-		mustSetCheck(s.report, step.name, statusPassed, passedSummary(step.name))
-	}
-	if incomplete {
-		return errEvidenceNotConfigured
+		mustSetCheck(s.report, step.name, statusPassed, checkSummaryPassed)
 	}
 	return nil
 }
@@ -456,15 +446,11 @@ func (s *phase2Suite) readyControllerPods(ctx context.Context) (*appsv1.Deployme
 	if err := s.client.Get(ctx, key, &deployment); err != nil {
 		return nil, nil, fmt.Errorf("read controller Deployment: %w", err)
 	}
-	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	pods, err := s.controllerDeploymentPods(ctx, &deployment)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build controller Deployment selector: %w", err)
+		return nil, nil, err
 	}
-	var podList corev1.PodList
-	if err := s.client.List(ctx, &podList, client.InNamespace(s.config.ControllerNamespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return nil, nil, fmt.Errorf("list controller pods: %w", err)
-	}
-	return &deployment, podList.Items, nil
+	return &deployment, pods.Items, nil
 }
 
 func (s *phase2Suite) verifyControllerPod(ctx context.Context, deployment *appsv1.Deployment, pod *corev1.Pod) error {
@@ -532,30 +518,10 @@ func (s *phase2Suite) requireAbsent(ctx context.Context, key client.ObjectKey, o
 	return fmt.Errorf("object already exists")
 }
 
-func markUnimplementedFaultChecks(report *e2eReport) {
-	for _, name := range []string{
-		"external deletion of an owned child resource",
-		"blocked finalization",
-		"quota failure",
-		"request timeout and rate limiting",
-		"Octavia resource failure",
-	} {
-		mustSetCheck(report, name, statusNotRun, checkSummaryFaultNotConfigured)
-	}
-}
-
 func mustSetCheck(report *e2eReport, name string, status checkStatus, summary string) {
 	if err := report.setCheck(name, status, summary); err != nil {
 		panic(err)
 	}
-}
-
-func passedSummary(string) string {
-	return checkSummaryPassed
-}
-
-func failedSummary(string) string {
-	return checkSummaryFailed
 }
 
 func writeReportAfterSetupFailure(t *testing.T, directory string, report *e2eReport) {

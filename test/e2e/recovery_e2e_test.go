@@ -23,7 +23,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"reflect"
+	"maps"
 	"sort"
 	"strings"
 	"testing"
@@ -44,8 +44,6 @@ import (
 	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/auditexec"
 	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
-
-var errEvidenceNotConfigured = errors.New("evidence input was not configured")
 
 type leaderProcessState struct {
 	podUID       types.UID
@@ -208,7 +206,7 @@ func (s *phase2Suite) controllerDeploymentPods(ctx context.Context, deployment *
 		client.InNamespace(s.config.ControllerNamespace),
 		client.MatchingLabelsSelector{Selector: selector},
 	); err != nil {
-		return corev1.PodList{}, err
+		return corev1.PodList{}, fmt.Errorf("list controller pods: %w", err)
 	}
 	return pods, nil
 }
@@ -364,8 +362,8 @@ func (s *phase2Suite) verifyConvergedNoOp(ctx context.Context) error {
 		return err
 	}
 	s.report.Metrics = &metricsEvidence{
-		Before: cloneMetricSnapshot(before.values),
-		After:  cloneMetricSnapshot(after.values),
+		Before: maps.Clone(before.values),
+		After:  maps.Clone(after.values),
 	}
 	return nil
 }
@@ -438,14 +436,6 @@ func (s *phase2Suite) triggerConvergedRouteObservation(ctx context.Context) erro
 	return s.waitForGateway(ctx, 1)
 }
 
-func cloneMetricSnapshot(input map[string]float64) map[string]float64 {
-	output := make(map[string]float64, len(input))
-	for name, value := range input {
-		output[name] = value
-	}
-	return output
-}
-
 func (s *phase2Suite) verifyActiveOwnershipInventoryAudit(ctx context.Context) error {
 	var fingerprint [32]byte
 	summary, err := s.runOwnershipAudit(ctx, false, &fingerprint)
@@ -476,7 +466,7 @@ func (s *phase2Suite) verifyRecoveryAudit(ctx context.Context, stage string) err
 			return false, nil
 		}
 		observed = summary
-		return reflect.DeepEqual(summary, *s.activeAudit) && fingerprint == s.activeAuditFingerprint, nil
+		return summary == *s.activeAudit && fingerprint == s.activeAuditFingerprint, nil
 	}); err != nil {
 		return fmt.Errorf("wait for active ownership inventory after controller recovery: %w", err)
 	}
@@ -730,13 +720,13 @@ func (s *phase2Suite) verifyPostCleanupAudit(ctx context.Context) error {
 			return false, nil
 		}
 		observed = summary
-		return reflect.DeepEqual(summary, *s.baselineAudit), nil
+		return summary == *s.baselineAudit, nil
 	})
 	if err != nil {
 		return fmt.Errorf("wait for ownership audit to return to baseline: %w", err)
 	}
 	s.report.Audit.AfterCleanup = &observed
-	mustSetCheck(s.report, "post-test ownership audit returns to baseline", statusPassed, passedSummary("post-test ownership audit returns to baseline"))
+	mustSetCheck(s.report, "post-test ownership audit returns to baseline", statusPassed, checkSummaryPassed)
 	return nil
 }
 
