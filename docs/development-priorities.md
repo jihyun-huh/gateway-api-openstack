@@ -22,22 +22,25 @@ balancer. The shared `graph.Coordinator` makes those calls take turns inside
 the active process. It does not compile the complete Gateway graph and it does
 not decide how route fragments survive a restart or a leader change.
 
-Start with an ADR for the writer and route fragment ownership. Preserve the
-current route identity and route selection behavior until that decision is
-accepted. The implementation should then move toward one provider-neutral
-desired Gateway graph, one observed graph, one deterministic mutation plan,
-and one cloud mutation entry point. Gateway and HTTPRoute reconciliation can
-continue to validate inputs and write the status fields they own.
+Start with an ADR for the writer and route fragment ownership.
+Preserve the current route identity and route selection behavior until that decision is accepted.
+The implementation should then move toward one provider-neutral desired Gateway graph, one observed graph, one deterministic mutation plan, and one cloud mutation entry point.
+Keep observation and execution separate from pure model construction and diff calculation so tests and benchmarks can exercise those calculations without Kubernetes or OpenStack I/O.
+Gateway and HTTPRoute reconciliation can continue to validate inputs and write the status fields they own.
 
 [ADR 0001](design/adr/0001-gateway-graph-writer.md) is the proposed contract.
 It is not accepted yet, so the mutation boundary must not change until its
 public review is complete.
 
-The graph lock remains useful, but correctness must come from observation and
-desired state rather than memory held by the active process. Tests should run
-Gateway and HTTPRoute events in both orders, cancel a waiting reconcile, build
-a new reconciler after a partial transition, and show that a second pass over
-converged state makes no cloud mutation.
+The graph lock remains useful, but correctness must come from observation and desired state rather than memory held by the active process.
+Tests should run Gateway and HTTPRoute events in both orders, cancel a waiting reconcile, build a new reconciler after a partial transition, and show that a second pass over converged state makes no cloud mutation.
+
+Add regression tests for [backend transitions](design/architecture.md#backend-transitions) that inspect each intermediate mutation and observed graph:
+
+- Switch between ready NodePort backends while preserving the pool, L7 policy, and unchanged member identities.
+- Change a backend NodePort or replace the complete member set and record any intermediate empty pool caused by the current member deletion order.
+- Remove a backend or its ready endpoints, then restore it and verify the status, cleanup, and recovery sequence.
+- Interrupt a transition with `PENDING_*`, a timeout, a restart, or another spec change and verify revalidation and eventual convergence with at most one mutation per reconciliation.
 
 ### 2. Protect the controller and OpenStack package boundaries
 
@@ -71,14 +74,22 @@ route behavior, or mutation ordering. It also does not implement
 and durable route fragment contract still need public review before their
 implementation begins.
 
-### 3. Tighten event fan-out and retry evidence
+### 3. Measure reconciliation cost and tighten event fan-out
 
-The current indexes avoid cluster-wide dependency scans. Node events can still
-fan out to every indexed HTTPRoute with a Service backend and then read its
-parent, Service, and EndpointSlices to find the affected set. Add scale tests that
-count Kubernetes reads and effective reconciles during Node and EndpointSlice
-bursts. Narrow the index or mapper if those results exceed the documented API
-budget.
+The current indexes avoid cluster-wide dependency scans.
+Node events can still fan out to every indexed HTTPRoute with a Service backend and then read its parent, Service, and EndpointSlices to find the affected set.
+Use synthetic fixtures, fake readers and adapters, and local benchmarks to establish a baseline before changing indexes, caches, or worker concurrency.
+Count Kubernetes reads, enqueued objects, effective reconciles, and member mutations during Node and EndpointSlice bursts, and measure model construction time and allocations as fixture sizes grow.
+Use the results to set an API budget and identify which work needs to be narrowed.
+
+Start with existing controller-runtime and OpenStack request metrics, then add measurements only where they leave a gap.
+Separate model calculation, Gateway lock wait, client-side rate-limit wait, API latency, Octavia pending duration, and total convergence time.
+Keep metric labels bounded and exclude object names, UIDs, and cloud IDs.
+Run these scale measurements locally rather than generating load in a shared OpenStack project.
+
+Reuse dependency reads within one reconciliation snapshot where measurements justify it.
+Any narrower member calculation still submits work through the Gateway graph writer and preserves complete ownership validation and live mutation checks.
+Do not introduce an independent member writer or use cached fragments as authority for deletion.
 
 Finalization uses typed provider outcomes and workqueue backoff. Add a repeated
 failure test that demonstrates the intended change from a bounded quick retry
@@ -101,13 +112,11 @@ Use a dedicated environment for fault scenarios under the guide's restrictions.
 Follow the [publication policy](reports/README.md) for local artifacts and PR summaries.
 Formal compatibility and release claims still require reviewed evidence under the roadmap and [compatibility matrix](providers/compatibility.md).
 
-### 5. Publish a conformance gap report
+### 5. Assess conformance after Phase 3 implementation
 
-Run the pinned GATEWAY-HTTP suite as a gap analysis even while failures are
-expected. Classify each failure as a controller defect, compiler work, missing
-backend mode, Octavia API limitation, or intentional non-goal. In particular,
-settle the path for ClusterIP Services, request header modification, request
-redirect, backend weights, invalid backends, and ReferenceGrant combinations.
+After completing Phase 3 implementation, run the pinned GATEWAY-HTTP suite as the next validation step and publish a gap report, even while failures are expected.
+Classify each failure as a controller defect, compiler work, missing backend mode, Octavia API limitation, or intentional non-goal.
+Use the findings to plan follow-up work for ClusterIP Services, request header modification, request redirect, backend weights, invalid backends, and ReferenceGrant combinations.
 
 Keep a local gap report separate from an upstream conformance report. An entry
 in the Gateway API implementation list requires a current upstream report. A
@@ -125,6 +134,7 @@ old bindings. Do this before publishing the Phase 3 CRD or a long-lived image
 reference.
 
 Define class configuration, per-Gateway overrides, snapshots, propagation, and migration before implementing the API.
+Specify defaults, override precedence, and conflict status for the concrete infrastructure settings in the roadmap.
 The identity, parameter, and compatibility ADRs must be accepted before adding the CRD.
 
 After that decision, publish a versioned pre-alpha image early enough for outside testing.
