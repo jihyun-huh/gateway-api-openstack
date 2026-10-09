@@ -209,6 +209,7 @@ The control loop follows these rules:
 - Collect the Kubernetes and OpenStack state needed for one reconciliation
   before building the desired graph.
 - Build and validate a deterministic desired graph without Gophercloud types.
+- Keep model construction and diff calculation independent of I/O so they can be tested and benchmarked from input snapshots.
 - Compare only the fields owned by this controller.
 - Apply the smallest mutation in dependency order.
 - Make at most one asynchronous state transition, observe it for a bounded
@@ -294,11 +295,11 @@ EndpointSlice. Watch handlers will use indexed reads instead of listing every
 object. Node changes will enqueue only affected managed NodePort backends, and
 the controller will coalesce event bursts into one update to the member set.
 
-Most indexes and watch mappers are implemented. The Node mapper still starts
-from all indexed Routes with a Service backend before checking which ones are
-affected. Scale tests must count reads and effective reconciles during Node and
-EndpointSlice bursts before the narrower fan-out and coalescing claims are
-considered complete.
+Most indexes and watch mappers are implemented.
+The Node mapper still starts from all indexed Routes with a Service backend before checking which ones are affected.
+Local scale tests must count reads, enqueues, effective reconciles, and member mutations during Node and EndpointSlice bursts before the narrower fan-out and coalescing claims are considered complete.
+Benchmark model construction and diff calculation separately from Kubernetes reads and OpenStack latency, using synthetic inputs and fake adapters.
+Use the [measurement work in the development priorities](docs/development-priorities.md#3-measure-reconciliation-cost-and-tighten-event-fan-out) to identify bottlenecks before adding caches or increasing concurrency.
 
 The controller reuses shared OpenStack clients. Keystone, Octavia, and Neutron
 requests use one configurable rate limit for the controller process. Bounded
@@ -309,13 +310,10 @@ scale tests show that it improves throughput without overwhelming OpenStack.
 
 ### Conformance feasibility and design gates
 
-Run the pinned GATEWAY-HTTP suite as a gap analysis and classify every result
-as controller defect, compiler work, Octavia limitation, planned extension, or
-out of scope. The known Core gaps include ClusterIP Services and any other
-Service backend accepted by Gateway API but rejected by the current NodePort
-path, `RequestHeaderModifier`, `RequestRedirect`, backend weights and invalid
-backend semantics, and every applicable ReferenceGrant combination. Weights
-assigned to Services must not be inferred from Octavia member weights.
+After completing Phase 3 implementation, run the pinned GATEWAY-HTTP suite as the next validation step and publish a gap analysis.
+Classify every result as controller defect, compiler work, Octavia limitation, planned extension, or out of scope.
+The known Core gaps include ClusterIP Services and any other Service backend accepted by Gateway API but rejected by the current NodePort path, `RequestHeaderModifier`, `RequestRedirect`, backend weights and invalid backend semantics, and every applicable ReferenceGrant combination.
+Weights assigned to Services must not be inferred from Octavia member weights.
 
 Do not advertise `HTTPRoute` in `supportedFeatures` until all HTTPRoute Core
 behavior has passed. Gateway API does not provide a declaration for only this
@@ -353,18 +351,19 @@ Keep the contribution guide, code of conduct, support policy, governance, OWNERS
 
 ### Work carried into Phase 3
 
-The following original Phase 2 gates remain open.
-Moving them into Phase 3 does not mark them as implemented or tested.
+The remaining Phase 2 gates and their Phase 3 follow-up work are listed below.
+They remain open until the required implementation and validation are complete.
 
 | Work | Required before |
 | --- | --- |
 | Accept the graph writer ADR and implement one complete desired graph, observation, and mutation path | Implementing the class API or expanding the route graph |
 | Accept the public identity, class configuration, migration, and CRD compatibility ADRs | Implementing or publishing the affected public API |
 | Measure Node and EndpointSlice event fan-out, API reads, and effective reconciles | Completing Phase 3 reliability work or increasing concurrency |
+| Test intermediate backend transition states, unchanged member preservation, and recovery | Completing Phase 3 reliability work |
 | Exercise partial creation, external deletion, quota, rate limiting, timeout, Octavia failure, repeat deletion, and `v0.1.x` upgrades | Closing the release reliability gate for the selected revision |
 | Validate blocked finalization and the operator recovery workflow with the ownership audit | Publishing the recovery procedure as verified in OpenStack |
 | Repeat baseline E2E for the selected release revision and publish a reviewed environment report | Making a compatibility claim for that release and environment |
-| Publish the pinned GATEWAY-HTTP gap analysis | Completing Phase 3 API design for backend and route behavior |
+| Publish the pinned GATEWAY-HTTP gap analysis | Closing the validation review after Phase 3 implementation |
 | Review contributor, governance, support, code of conduct, ADR guidance, and working contact paths | Publishing artifacts for outside testing |
 
 Preserve serialization by Gateway UID, reconcile state local to each request, bounded Octavia progress checks, and indexed dependency reads throughout this work.
@@ -380,6 +379,9 @@ Formal release evidence follows the [publication policy](docs/reports/README.md)
 
 Start with the [work carried from Phase 2](#work-carried-into-phase-3).
 API and ownership changes still require their design decisions before implementation.
+
+The graph writer work also covers [backend transitions](docs/design/architecture.md#backend-transitions), including replacement of every member or NodePort and recovery after a backend becomes unavailable.
+Verify the intermediate graph, status, and restart behavior before making any traffic continuity claim.
 
 Phase 3 replaces a growing set of infrastructure flags for the controller
 deployment with a small, typed GatewayClass configuration API. The provisional
@@ -482,6 +484,7 @@ an excuse to accept a non-Amphora provider silently.
 ### Phase 3 exit criteria
 
 - Complete the carried graph writer, API design, and scale work, and retain explicit release gates for validation that is still outstanding.
+- Record the measured cost of model construction and event handling, and cover intermediate backend transition states with controller and adapter tests.
 - A reviewed `v1alpha1` API, generated CRD, examples, and API reference are
   published under a domain controlled by the project.
 - Invalid, missing, ambiguous, or unauthorized configuration is rejected

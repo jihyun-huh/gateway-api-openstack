@@ -201,6 +201,12 @@ hardening from the planned HTTP/HTTPS target.
 The controller does not model an Octavia provider choice in the class API. It
 always requests and verifies Amphora.
 
+Reusing a resolved Service within one reconciliation does not require sharing its Octavia pool across routes.
+The current pool and its children include HTTPRoute identity and cannot be shared between routes.
+Sharing a pool within one Gateway would require an ADR for ownership, protocol and policy compatibility, reconstruction after restart, and deletion after the last reference disappears.
+Backend address equality alone cannot establish that two routes can share a pool or health monitor.
+Pools are not shared across Gateways.
+
 ## Immutable cloud identity
 
 The controller proves ownership from these immutable values:
@@ -297,6 +303,11 @@ Serialization prevents overlapping mutations, but the two paths remain separate.
 [ADR 0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route fragment contract.
 It is not accepted or implemented yet.
 
+In that writer, keep input collection, desired model construction, diff calculation, and mutation execution separate within the existing controller and provider boundaries.
+Model construction and diff calculation should be deterministic functions of their input snapshots, testable without Kubernetes or OpenStack I/O.
+Reuse resolved inputs within a reconciliation where their required freshness is the same.
+This reuse must preserve live ownership checks and observation after an asynchronous transition.
+
 ### Asynchronous OpenStack operations
 
 Octavia is asynchronous. Each reconciliation should make at most one state
@@ -309,6 +320,18 @@ retryable API failure, rate limiting, quota exhaustion, terminal validation,
 Octavia `ERROR`, and ownership conflict are distinct outcomes. Timeouts and
 retries are bounded, and a later reconciliation always observes the resource
 again before acting.
+
+### Backend transitions
+
+Ordered Octavia mutations do not make a backend change atomic or guarantee uninterrupted traffic.
+For a valid backend change on the same route and Gateway, the current member plan removes obsolete members before adding replacements to the existing pool.
+Replacing every member address or NodePort can therefore leave the pool empty between reconciliations.
+The baseline OpenStack E2E run does not establish traffic behavior during that transition.
+Neither Octavia `ACTIVE` nor Gateway `Programmed=True` alone proves backend health or traffic continuity.
+
+Phase 3 tests must examine intermediate graphs as well as eventual convergence, preserving unchanged members and the current status-before-cleanup safeguards.
+A change to create replacements first, retain old members for a grace period, or provision another pool needs a reviewed transition design covering health, mixed backend traffic, quota, rollback, and removal of invalid or revoked backends.
+Any change to resource mapping or ownership also requires an accepted ADR.
 
 ### Efficient Kubernetes event handling
 
@@ -325,6 +348,10 @@ irrelevant, but they must not hide a dependency transition needed for
 correctness. The controller treats cached objects as immutable and makes a copy
 before mutation. It uses an uncached `APIReader` only for a documented
 read-after-write or safety requirement.
+
+Measure event handling and graph construction before introducing another cache or reconciliation path.
+EndpointSlice processing can narrow the work needed to calculate NodePort membership, but member mutations remain part of the serialized Gateway graph.
+An event or cached calculation does not prove that the complete graph is current or authorize skipping ownership validation.
 
 ## Target controller responsibilities
 
